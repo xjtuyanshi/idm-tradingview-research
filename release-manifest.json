@@ -1,0 +1,22 @@
+{
+  "release": "11.0.0-clean",
+  "frozen_at": "2026-07-21",
+  "pine_file": "intraday_decision_map_v11_aggressive_clean.pine",
+  "pine_sha256": "77c6fb4014f3ba93d741bbe445438db0664609326145c82fafe9403b8b80cd03",
+  "source_commit": "8a5f03a6a321733df8fb330bf8ad685691ba357d",
+  "fixture_commit": "f3d5dcd",
+  "prior_tradingview_revision": "IDM v11 Aggressive Clean 13.0",
+  "status": "runnable-negative-expectancy-research-baseline",
+  "pine_oracle_parity": false,
+  "historical_probability_calibrated": false,
+  "private_market_fixtures_redistributed": false,
+  "recorded_strategy_snapshot": {
+    "window": "2026-07-16/2026-07-21",
+    "partial_exit_legs": 535,
+    "profitable_exit_legs": 182,
+    "profit_factor": 0.638,
+    "expected_payoff_usd": -0.33,
+    "maximum_drawdown_usd": 205.46,
+    "total_pnl_usd": -175.41
+  }
+}

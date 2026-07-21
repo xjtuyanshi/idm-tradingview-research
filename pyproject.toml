@@ -1,0 +1,12 @@
+[project]
+name = "idm-tradingview-research"
+version = "11.0.0"
+description = "Auditable research baseline for a TradingView intraday decision assistant"
+requires-python = ">=3.11"
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+
+[tool.pytest.ini_options]
+testpaths = ["research/tests"]
+addopts = "-ra"

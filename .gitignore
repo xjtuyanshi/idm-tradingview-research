@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.DS_Store
+
+# Private/local evidence is intentionally excluded.
+research/fixtures/
+exports/
+screenshots/
+visual-proof/
+*.csv
+*.zip
+.env
+.env.*
