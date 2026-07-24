@@ -1,0 +1,133 @@
+{
+  "contract_version": 1,
+  "engine_version": "11.0.0-clean",
+  "pine_file": "intraday_decision_map_v11_aggressive_clean.pine",
+  "pine_sha256": "77c6fb4014f3ba93d741bbe445438db0664609326145c82fafe9403b8b80cd03",
+  "authority_note": "Values below are the observed behavior of the frozen Pine release. The Python replica must match them. Any deliberate rule improvement requires contract_version+1, a new Pine version id, and a new report.",
+
+  "lengths": {
+    "pace_fast": 5,
+    "pace_slow": 12,
+    "anchor_fast": 34,
+    "anchor_slow": 50,
+    "atr": 14,
+    "pivot": 3,
+    "structure_lookback": 4,
+    "compression_lookback": 8
+  },
+
+  "thresholds": {
+    "touch_atr": 0.10,
+    "trigger_atr": 0.02,
+    "trigger_buffer_min_ticks": 2,
+    "strong_body_ratio": 0.34,
+    "close_edge_fraction": 0.32,
+    "pullback_wick_fraction": 0.24,
+    "rejection_wick_fraction": 0.38,
+    "rejection_requires_strong_body": false,
+    "compression_atr": 2.20,
+    "stop_buffer_atr": 0.10,
+    "max_risk_atr": 1.30,
+    "min_space_r": 0.55,
+    "b_space_r": 0.75,
+    "a_space_r": 1.00,
+    "a_max_ema5_distance_atr": 1.20,
+    "hard_structure_break_atr": 0.08,
+    "established_close_offsets": [2, 3, 4]
+  },
+
+  "phase": {
+    "base_ema_length": 21,
+    "atr_normalization_multiple": 3.0,
+    "smoothing_ema_length": 3,
+    "bull_floor": -23.6,
+    "bear_ceiling": 23.6,
+    "stdev_length": 21,
+    "compression_stdev_atr": 1.10,
+    "note": "bullPhase = rising OR >= bull_floor; bearPhase = falling OR <= bear_ceiling. Both are near-vacuous by construction; recorded as frozen behavior."
+  },
+
+  "levels": {
+    "support_sources_nearest_below": ["saty_below", "confirmed_pivot_low", "prior_day_low", "fast_cloud_lower", "anchor_cloud_lower", "context_anchor_lower"],
+    "resistance_sources_nearest_above": ["saty_above", "confirmed_pivot_high", "prior_day_high", "fast_cloud_upper", "anchor_cloud_upper", "context_anchor_upper"],
+    "t1_obstacle_sources": ["saty", "confirmed_pivot", "prior_day", "fast_cloud", "anchor_cloud", "context_anchor"],
+    "t2_second_obstacle_sources": ["saty", "confirmed_pivot", "prior_day"],
+    "obstacle_eligibility": "candidate must be beyond reference by more than touch tolerance (f_pick_above/f_pick_below)",
+    "saty_ratios": [-3.0, -2.618, -2.0, -1.618, -1.272, -1.0, -0.786, -0.618, -0.5, -0.382, -0.236, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.272, 1.618, 2.0, 2.618, 3.0],
+    "saty_anchor": "previous daily close via request.security('D', close[1], lookahead_on)",
+    "saty_atr": "previous daily ta.atr(14) via the same request"
+  },
+
+  "routes": {
+    "level_rejection": "always allowed (only sanctioned countertrend route)",
+    "pullback_continuation": "blocked when confirmed 10m 34/50 is opposite",
+    "compression_breakout": "blocked when confirmed 10m 34/50 is opposite",
+    "trend_ignition": "route condition is (trend_route OR close beyond 3m anchor cloud); a proven ignition always satisfies the second clause, so ignition is effectively never route-blocked. Recorded as frozen behavior and a known design risk."
+  },
+
+  "arbitration": {
+    "same_side_setup_priority": ["LEVEL_REJECTION", "PULLBACK_CONTINUATION", "COMPRESSION_BREAKOUT", "TREND_IGNITION"],
+    "long_vs_short_same_bar": "higher setup priority wins; tie -> higher grade wins; tie -> bullish candle (close >= open) chooses long",
+    "dedup": "per-setup edge: ready AND NOT ready[1]; no global cooldown, no daily quota"
+  },
+
+  "plan": {
+    "lifecycle_order": ["STOP", "T2", "T1", "STRUCTURE_EXIT", "PACE_PROTECT"],
+    "ambiguous_bar_rule": "stop-first",
+    "t1_action": "exit 50%, effective stop -> entry",
+    "t2_action": "exit 25%; runner kept only if confirmed 10m trend AND 3m pace align with plan side, effective stop -> T1; otherwise plan ends",
+    "runner_fraction": 25,
+    "reverse": "non-countertrend opposite signal ends the plan (REVERSE) and opens the new plan on the same bar",
+    "countertrend_vs_open_plan": "signal is recorded with role COUNTERTREND_ADVISORY; the frozen plan is not modified",
+    "add": "same-side signal while plan active is recorded with role ADD; plan and broker position unchanged",
+    "same_bar_stop_and_reentry": "allowed: lifecycle runs before new-signal creation on the same confirmed close"
+  },
+
+  "series_semantics": {
+    "ta_ema_seeding": "na for the first length-1 defined inputs; seeded with the SMA of the first length inputs; recursive afterwards (established empirically 2026-07-21)",
+    "ta_atr_seeding": "RMA: na until length TRs, seeded with their SMA, Wilder update afterwards; first TR = high-low",
+    "ta_stdev": "population (biased) standard deviation over the window; na until the window fills",
+    "pivot_tie_rule": "ta.pivotlow/pivothigh allow ties on the LEFT side and require strict improvement on the RIGHT side, so the most recent bar of a flat double top/bottom becomes the pivot (established empirically 2026-07-21)",
+    "daily_bar_close": "session-chained: a daily bar closes at min(open+24h, next bar's open); the CAPITALCOM Sunday-reopen bar is 23h",
+    "float_boundary_floor": "comparisons decided by margins <= ~2e-12 at price levels are not reproducible from outside the Pine runtime; Pine's own 3m and 10m hosts can disagree on such bars (see IDM_V11_PARITY_2026-07-21.md section 4)"
+  },
+
+  "context": {
+    "engine_timeframe": "3",
+    "context_timeframe": "10",
+    "daily_timeframe": "D",
+    "boundary_semantics": "request.security(tf, expr[1], lookahead_on): a 3m bar maps to the HTF bar containing its OPEN time and reads the bar before that (empirically established against the 2026-07-21 true export; equivalently: last HTF close <= 3m open). A 3m bar straddling an HTF boundary still reads the HTF bar that closed before the straddled boundary.",
+    "warmup": "no readiness gate: na values propagate false, so setups start firing as soon as ATR(14) and the touched level sources become defined"
+  },
+
+  "identity": {
+    "signal_id": "close_time_ms + (100 if long else 200) + setup_code*10 + grade_code",
+    "setup_codes": {"LEVEL_REJECTION": 1, "PULLBACK_CONTINUATION": 2, "BREAKOUT": 3, "IGNITION": 4},
+    "grade_codes": {"C": 1, "B": 2, "A": 3},
+    "plan_event_id": "close_time_ms + event_code",
+    "event_codes": {"T1": 1, "T2": 2, "STOP": 3, "PROTECT": 4, "STRUCTURE_EXIT": 5, "REVERSE": 6},
+    "reason_mask_bits": {"rejection": 1, "pullback": 2, "breakout": 4, "ignition": 8, "context_dir_aligned": 16, "context_pace_aligned": 32, "phase_aligned": 64, "countertrend": 128}
+  },
+
+  "execution": {
+    "default_qty": 2,
+    "countertrend_qty_multiplier": 0.5,
+    "t1_exit_percent": 50,
+    "t2_exit_percent": 25,
+    "runner_exit_percent_before_t2": 25,
+    "runner_exit_percent_after_t2": 100,
+    "commission_type": "cash_per_contract",
+    "commission_value": 0.0,
+    "slippage_ticks": 2,
+    "process_orders_on_close": true,
+    "calc_on_every_tick": true,
+    "calc_on_order_fills": false,
+    "pyramiding": 0
+  },
+
+  "runtime": {
+    "engine_calc_bars": 1500,
+    "relay_calc_bars": 4000,
+    "default_mintick_capitalcom_spx500": 0.1
+  }
+}
