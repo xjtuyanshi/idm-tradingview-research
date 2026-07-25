@@ -94,3 +94,60 @@
 - **注意标的差异**：他 #ideas 里绝大多数是个股（INTC/NVDA/AMZN/AAPL/SOFI/PANW），
   SPX/SPY 出现较少。我们做的是纯 SPX500——**他的个股 setup 未必平移得过来**，
   但 ATR 位地图 + 双向剧本这个**框架**是标的无关的。
+
+---
+
+## 五、2026-07-24 当日一手补充（#notes 实盘解说 + 周报）
+
+### 5.1 他的实盘解说（11:25–11:50 ET，逐字）
+
+> 11:28 「PDC and LOD test possible if this continues」
+> 11:34 「Here's PDC」　11:35 「Approaching LOD」
+> 11:35 「**Can leave runners, good scale out here**」
+> 11:37 「**3m extreme here. 10m has room**, but maybe some consolidation, pullback possible」
+> 11:41 「We lose LOD, **put trigger** can happen quickly. Expecting demand/support here but this looks selly」
+> 11:47 「I think this bounce here with **3m extreme at demand/support** makes a lot of sense.
+> 　　　 Can watch for 3m resistance again. **I'm going to call it here.**」
+> 11:50 「@everyone Last two weeks have been on **hard mode**. Once this daily box resolves, should get a little easier.」
+
+**四条可编码的观察：**
+
+1. **「3m extreme / 10m has room」= 双周期 Phase Oscillator 读数。** 这是他判断
+   "该减仓还是该拿住"的核心句式：执行周期极端 → 减仓；上级周期仍有空间 → 留 runner。
+   我们有 3m/10m 这一对，但**从来没把 Phase 读数配对呈现**。
+2. **减仓语言是「scale out + leave runners」**，与我们 T1/T2/runner 的三段结构一致，
+   但他的触发是**到达具名位 + 执行周期极端**，不是 R 倍数。
+3. **他 11:47 收工**，与 #orientation 里自述的
+   「I focus mostly on trading the **first couple hours off the open**,
+   aiming to be able to be **done for the day by 12pm EST**」完全一致。
+4. 目标全部是具名位：PDC、LOD、put trigger、demand/support。
+
+### 5.2 周报 7/26 的 SPX 段（逐字）
+
+> "We are still in the **monthly trigger box** roughly between 7400 and 7600.
+> Weaker stance going into next week **under D21 and H200**. I'm leaning bearish
+> as long as we stay **under the bearish D21 and the monthly pivot**. On further
+> weakness **below the Swing short trigger** we have a **clear path level-to-level
+> down to recent demand. This is also the Weekly 21.** Selling exhaustion can set up
+> an **hourly (RTH) divergence** for some mean reversion."
+
+QQQ 段："Bounced **−1 Monthly ATR**, rejected **bearish daily ribbon** … near the **W21** …
+Below that can see **−1 Quarterly ATR**."
+
+**下周关键事件（他列的）**：周二 Consumer Confidence；**周三 FOMC 利率决议（62.1% 按兵不动）+ Fed Chair Warsh**；
+周四 PCE/GDP/失业；周五 Chicago PMI。财报：周三盘后 MSFT/META/ARM/QCOM，周四盘后 AAPL/AMZN。
+
+### 5.3 由此新增的词表缺口（比第三节更严重）
+
+| 术语 | 含义 | 我们有吗 |
+|---|---|---|
+| monthly trigger box / monthly pivot | **月线** ATR 锚 ±0.236 | ✅ 已补（`mtf_levels.py`） |
+| −1 Monthly ATR / −1 Quarterly ATR | **月/季线** ATR 位 | ✅ 已补 |
+| W21 / D21 / H200 / H21(RTH) | 周/日 21 EMA、小时 200/21 EMA | ❌ **仍缺** |
+| Swing short trigger | 波段周期的触发位 | ❌ 仍缺 |
+| demand / supply zone | 需求/供给区 | ❌ 仍缺（非 ATR 类） |
+| hourly (RTH) divergence | 小时线 RTH 背离 | ❌ 仍缺 |
+| 「3m extreme / 10m has room」 | **双周期 Phase 配对读数** | ⚠ 有指标无配对呈现 |
+
+**注意**：`REGIME_MONTHLY_BOX_2026-07-25.md` 已证明「月线箱内 = 难做」**在 20 年样本上不成立**。
+多周期位应当作为**地图与目标**使用，不要据此建 regime 过滤器。
