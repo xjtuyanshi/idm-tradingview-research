@@ -526,6 +526,23 @@ def section0() -> str:
             "        斜率显著为正即是失真证据。^GSPC 斜率 +0.086、SPY +0.007。",
             "        也就是说 ^GSPC 的开盘印刷平均漏掉了约 9% 的跳空，",
             "        这 9% 会在开盘后 5 分钟内走完——而它在数据里长得像『延续』。"]
+    # independent corroboration: regress the GSPC gap on the SPY gap
+    gx, gy = [], []
+    for day in sorted(set(G) & set(S)):
+        Lg, Ls = lg.get(day), ls.get(day)
+        if not Lg or not Ls or day < GSPC_CLEAN_FROM:
+            continue
+        gx.append(Ls.ratio_of(S[day].open))
+        gy.append(Lg.ratio_of(G[day].open))
+    r, sl = _corr_slope(gx, gy)
+    out += ["",
+            f"  独立佐证（2017+，n={len(gx)}）：回归 GSPC跳空 ~ SPY跳空，"
+            f"corr={r:.3f}，斜率={sl:.3f}。",
+            "  斜率 <1 即为压缩。注意它比 0A 表里的中位数比值（0.8-0.93）更低——",
+            "  回归被大跳空日主导，说明**跳空越大压缩越狠**，这正是滞后印刷的预测",
+            "  （行情越大，09:30 时还没开盘的成分股越多）。",
+            "  0B 的漂移斜率 (+0.086) 只覆盖开盘后 5 分钟、且 n=59，是压缩量的下界，",
+            "  两者方向一致但不必数值互补——不要把它们当成同一个量。"]
 
     out += ["", "0C. 决定性对照：同一批日子，两个标的各自度量的当日走势", "",
             "  日子由 SPY 的跳空定义（2017 年之后，^GSPC 已是最干净的时期）。",
@@ -735,6 +752,24 @@ def barrier_race(sym: str, interval: str, rng_: str, label: str,
     amb = sum(v[2] for v in tab.values()) / tot
     lines.append(f"  同根K不可判 = {100*amb:.1f}%"
                  + ("   ← 分辨率不足，本表只能当参考" if amb > 0.25 else ""))
+    # explicit resolution diagnostic: how wide is one bar vs the 2k barrier gap
+    widths, first_w = [], []
+    for day, bars in bars_by_day.items():
+        L = lv.get(day)
+        if not L or not bars:
+            continue
+        for x in bars:
+            widths.append((x.high - x.low) / L.atr)
+        first_w.append((bars[0].high - bars[0].low) / L.atr)
+    if widths:
+        widths.sort()
+        med = widths[len(widths) // 2]
+        share = sum(1 for x in widths if x >= 2 * k) / len(widths)
+        fmed = sorted(first_w)[len(first_w) // 2]
+        fshare = sum(1 for x in first_w if x >= 2 * k) / len(first_w)
+        lines.append(f"  分辨率诊断：双边距离 {2*k:.3f} ATR；单根 K 振幅中位 "
+                     f"{med:.3f}，其中 {100*share:.1f}% 的 K 自身就跨得过双边；"
+                     f"首根 K 中位 {fmed:.3f}，{100*fshare:.1f}% 跨得过。")
     return "\n".join(lines)
 
 
@@ -801,6 +836,38 @@ def main() -> None:
     print()
     print(crosstab("3B. SPY 20y — Golden Gate 完成率（条件于盘中真触发）",
                    rows, gap_bucket, gg_completion, order=GAP_NAMES))
+    print()
+    print("3C. 把 GOLDEN_GATE_REPRODUCTION 的总完成率拆开：")
+    print("    『开盘就穿透 0.382』和『盘中才触发』根本不是同一件事。\n")
+    for sym, rr in (("SPY 20y", rows), ("^GSPC 2017+ (对照)", grows)):
+        for side, nm in ((1, "看涨"), (-1, "看跌")):
+            trig = [r for r in rr if (r.r_hi >= GG if side > 0
+                                      else r.r_lo <= -GG)]
+            done = [r for r in trig if (r.r_hi >= GGC if side > 0
+                                        else r.r_lo <= -GGC)]
+            thru = [r for r in trig if (r.gap >= GG if side > 0
+                                        else r.gap <= -GG)]
+            tdone = [r for r in thru if r in done]
+            intra = [r for r in trig if r not in thru]
+            idone = [r for r in intra if r in done]
+            z = FAM.record(f"3C {sym} {nm} 开盘穿透 vs 盘中触发 完成率",
+                           stats.two_proportion_z(len(tdone), len(thru),
+                                                  len(idone), len(intra)),
+                           len(trig))
+            print(f"  {sym:<20}{nm}GG 全部触发   {stats.fmt_rate(len(done), len(trig))}")
+            print(f"  {'':<20}  开盘即穿透 {stats.fmt_rate(len(tdone), len(thru))}"
+                  f"   (占全部交易日 {100*len(thru)/len(rr):.1f}%)")
+            print(f"  {'':<20}  盘中才触发 {stats.fmt_rate(len(idone), len(intra))}"
+                  f"   两者 z={z:+.2f}")
+        print()
+    print("  读法：GOLDEN_GATE_REPRODUCTION 报的 66% 是一个混合数。")
+    print("  它由约 36% 的『开盘跳空穿透』触发（完成率 86-89%）和 64% 的")
+    print("  『盘中才触发』（完成率 51-55%）拼成，两者 z=+16~18，是完全不同的两件事。")
+    print("  图上给概率时必须分开报——否则在盘中才触发的那一半日子里，")
+    print("  你显示的概率会高出十几个百分点。这与 GG 报告里 tesrak 的分时段表一致：")
+    print("  开盘档 ~90%、09:30 档 ~70%、之后单调衰减。")
+    print("  另注：^GSPC 判定为『开盘即穿透』的日子占比明显低于 SPY，")
+    print("  仍然是第 0 节那个开盘印刷压缩造成的（跳空被记小了）。")
 
     # ---- 4. named open zone ---------------------------------------------
     print("\n" + "=" * 78)
