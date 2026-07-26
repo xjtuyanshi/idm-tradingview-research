@@ -27,23 +27,25 @@ from .data import Bar
 ATR_LEN = 14
 
 # ── Instrument caveat, measured 2026-07-26 ────────────────────────────────
-# The official Saty ATR Levels indicator reads its symbol with
-# `ticker.new(prefix, ticker, session=session.extended)`, so on a nearly-24h
-# instrument the daily bar spans ~23h and its true range is wider than the
-# 6.5h cash session.  Checked against two live readings of the indicator on
-# CAPITALCOM:SPX500 (the user's actual chart):
+# The construction below was verified to the cent against the official Saty
+# ATR Levels indicator running on the user's own CAPITALCOM:SPX500 chart:
 #
-#     map day     official anchor / ATR      ^GSPC ATR    ratio
-#     2026-07-23  7503.90 / 84.81            77.61        0.9150
-#     2026-07-24  7417.50 / 88.51            80.84        0.9134
+#     anchor 7417.50 / ATR 88.48 / call 7438.38 / put 7396.62 / +1ATR 7505.98
 #
-# So ^GSPC understates the traded instrument's ATR by about 8.6%, and the
-# ratio is stable to 0.16% across the two samples.  Every level built from
-# ^GSPC therefore sits ~9% closer to the anchor than the one the user sees.
-# Two readings do not certify a constant; treat this as a caveat to state,
-# not a correction to silently apply.  Pine is unaffected — it reads the
-# chart's own symbol and reproduces the official construction exactly.
-SPX_CASH_TO_CFD_ATR = 1.094   # ^GSPC ATR * this ~= CAPITALCOM:SPX500 ATR
+# reproduced exactly by taking the previous completed daily bar and this
+# module's Wilder ATR(14).  The maths in this file is correct.
+#
+# What is NOT interchangeable is the instrument.  A first check on two days
+# suggested ^GSPC's ATR was a stable 0.914 of the CFD's; extending it to 246
+# overlapping days destroys that: the ratio has mean 1.117, sd 0.083 and runs
+# from 0.826 to 1.418.  Two points looked like a constant and were not one.
+#
+# So ^GSPC cannot proxy the traded instrument for anything level-based, with
+# or without a correction factor — the levels a ^GSPC study places differ from
+# the ones the user trades by a median 12% and vary +/-8% day to day.  Research
+# that needs the real ladder needs real CAPITALCOM:SPX500 history.  Pine is
+# unaffected: it reads the chart's own symbol and reproduces the official
+# construction directly.
 
 TRIGGER = 0.236
 GG_ENTRY = 0.382
