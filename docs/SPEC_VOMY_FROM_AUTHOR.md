@@ -1,5 +1,25 @@
 # Vomy 设定 —— 原作者逐字定义（2026-07-26）
 
+> ⚠️ **2026-07-26 晚 自我更正**（依据完整 13 集逐字稿的全文检索，见
+> `docs/SPEC_SATY_VIDEOS_ROUND2.md`）。本文初稿有三处我的过度解读，已在正文标注：
+>
+> 1. **【我错了】「衰竭必须发生在具名位上」不成立。** 他只要求
+>    "some form of resistance"（双顶或单顶）；ATR 0.382 只是他那个**举例**里恰好的位。
+>    **位共振是加分项，不是必要条件。** 我把一个例子读成了规则。
+> 2. **【我错了】"Yummy" 不是 Saty 的词。** 13 集逐字稿 + 4 个视频描述全文检索：
+>    `yummy|yumi|yummi` = **0 命中**，`vomi` = 18 命中。他管看涨版本叫
+>    **"inverse vomi"**。所有关于 Yummy 的说法都是第三方博客的，证据等级须降到三手。
+> 3. **【顺序错了】ribbon 变色是 Vomy 的【结果】，不是触发。** 原话 [3:59]：
+>    "as that's happening we start to get this multi EMA crossover … and now form a
+>    bearish ribbon — **so to anticipate that is what the vomy setup really does**"。
+>    用户描述的"绿带变红那一瞬间"方向正确，但在他的序列里**晚了大约两步**。
+>
+> 另外补充两条原话细节：**止损没有标准答案**——他明说
+> "there's no definitive way to do this, it's very much based on how you set up the trade"；
+> **目标是多级分批**（0.5 → 0.618 → runner），因此两结局的 S/(S+T) 模型
+> **系统性低估**他的真实构造。
+
+
 > 来源：Saty Mahajan YouTube，《The "Vomy" Setup and How to Spot and Trade it
 > Using Saty Pivot Ribbon》（视频 ID `eYeUS5wRwKg`，6:33，30K 播放，3 年前）。
 > 逐字稿由浏览器取回（314 段）。**证据等级 [A]：原作者本人口述。**
@@ -21,7 +41,7 @@
 > 1:46「typically it'll happen when you have some **nice clear trend** so you have
 > **stacked EMAs: 8 above 13, 13 above 21, 21 above 34, 34 above 48**」
 
-**衰竭发生在一个具名位上（关键！）**
+**衰竭发生在阻力处（⚠ 原文只要求"某种阻力"，具名位是他举例中的巧合，非必要条件）**
 > 2:34「you get clear trend, forms these fins, **you meet resistance — so at this
 > point it's the 38.2 level**」
 > 2:03「usually you'll get a **double top**, or sometimes you'll even just get a
