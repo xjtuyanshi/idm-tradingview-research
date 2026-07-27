@@ -1,0 +1,563 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+// IDM v14 — one script, the whole loop: map → setup → entry → exits → ledger
+//
+// Design contract (2026-07-27, per user direction):
+//   1. IMPLEMENT FIRST, judge later.  This script faithfully implements the
+//      two entry/exit setups Saty teaches in his own videos.  Statistics are
+//      the LEDGER'S job: every closed trade is recorded and split by session
+//      (RTH vs overnight) and by setup, so the data accumulates while we use
+//      the system — statistics never again block implementation.
+//   2. ALL SESSIONS.  No session gate.  The ledger tags each trade 【RTH】or
+//      【夜盘】so performance can be compared afterwards.
+//   3. ONE SCRIPT.  Replaces IDM v12/v13 follower and the v14 Map.  Nothing
+//      on the chart fights anything else.
+//
+// Entry/exit rules transcribed from the author (evidence: his own videos):
+//   Ribbon Recovery (continuation) — "recovers the 13, that's a good entry
+//     right there"; stop = "closing above/below that, get out".
+//   Vomy / inverse Vomy (reversal) — stacked EMAs 8/13/21/34/48, exhaustion,
+//     break of 8&13, "this retest of the 13 is often a really good spot to
+//     get in… you're going to get most of the move down"; confirmation =
+//     "break and hold of the 48"; targets = ATR levels ("taking profit at the
+//     previous close… at the put trigger"); scale out and leave runners.
+//   Targets are NAMED LEVELS, never R multiples (his posts, 9/9).
+//
+// ATR level construction copied from the official Saty ATR Levels source
+// (PUB;99165984ef224287a726a7f24576b530) and verified to the cent against it
+// on CAPITALCOM:SPX500 (anchor 7417.50 / ATR 88.48 / call 7438.38 /
+// put 7396.62 / +1 7505.98).
+// ═══════════════════════════════════════════════════════════════════════════
+indicator("IDM v14", "IDM v14", overlay=true,
+     max_lines_count=150, max_labels_count=250)
+
+const string VERSION_ID = "14.1.0-system"
+
+// ── Inputs ────────────────────────────────────────────────────────────────
+string G_ATR = "01 · ATR 位（对齐官方 Saty ATR Levels）"
+string MODE_DAY = "Day 日内"
+string MODE_WEEK = "Multiday 周"
+string MODE_MONTH = "Swing 月"
+string MODE_QUARTER = "Position 季"
+string atrMode = input.string(MODE_DAY, "ATR 模式", group=G_ATR,
+     options=[MODE_DAY, MODE_WEEK, MODE_MONTH, MODE_QUARTER])
+int atrLen = input.int(14, "ATR 长度", minval=2, group=G_ATR)
+float trigPct = input.float(0.236, "Trigger 比例", step=0.001, group=G_ATR)
+bool showFib = input.bool(true, "显示全部斐波那契位", group=G_ATR)
+bool showExt = input.bool(false, "显示延伸位 ±1.272/±1.618", group=G_ATR)
+
+string G_SESS = "02 · 时段位"
+bool showOvernight = input.bool(true, "夜盘高低 (18:00→09:30 ET)", group=G_SESS)
+bool showPremarket = input.bool(true, "盘前高低 (04:00→09:30 ET)", group=G_SESS)
+bool showPrevDay = input.bool(true, "前日高低 PDH/PDL", group=G_SESS)
+
+string G_RIB = "03 · Pivot Ribbon（8/13/21/34/48，作者定义）"
+bool showRibbon = input.bool(true, "显示 Ribbon", group=G_RIB)
+bool showTimeWarp = input.bool(true, "显示 TimeWarp 上级 13/48", group=G_RIB,
+     tooltip="在执行周期图上叠加上级周期的 13/48 EMA。作者标准配对：3m 图配 10m。" +
+         "上级线盘中随上级 K 实时变化（作者原版同此），仅作语境显示，不参与信号判定。")
+string twTF = input.timeframe("10", "TimeWarp 上级周期", group=G_RIB)
+
+string G_SET = "04 · Setup 状态机"
+bool enRecovery = input.bool(true, "启用 Ribbon Recovery（顺势回踩收复）", group=G_SET)
+bool enVomy = input.bool(true, "启用 Vomy / inverse Vomy（趋势反转）", group=G_SET)
+int stackBars = input.int(5, "『清晰趋势』所需的连续排列 K 数", minval=2, group=G_SET)
+float minRiskPts = input.float(2.0, "最小风险距离（点）", minval=0.5, group=G_SET,
+     tooltip="风险距离小于此值的入场跳过（点差保护，CFD 点差约 0.6）。")
+
+string G_AL = "05 · 提醒与账本"
+bool enableAlerts = input.bool(true, "启用推送（入场/减仓/离场）", group=G_AL)
+bool showLedger = input.bool(true, "显示记分板", group=G_AL)
+bool showPlaybook = input.bool(true, "显示双向剧本", group=G_AL)
+
+// ── Label ring buffer (GC-safe history) ───────────────────────────────────
+const int LABEL_CAP = 160
+var array<label> keepLabels = array.new<label>()
+f_keep(label lb) =>
+    array.push(keepLabels, lb)
+    if array.size(keepLabels) > LABEL_CAP
+        label.delete(array.shift(keepLabels))
+    lb
+
+// ── ATR level engine (official construction) ──────────────────────────────
+f_tf() =>
+    atrMode == MODE_WEEK ? "W" : atrMode == MODE_MONTH ? "M" :
+     atrMode == MODE_QUARTER ? "3M" : "D"
+
+var string tkr = ticker.new(syminfo.prefix, syminfo.ticker,
+     session=session.extended)
+[anchor, atrVal, pdh, pdl] = request.security(tkr, f_tf(),
+     [close[1], ta.atr(atrLen)[1], high[1], low[1]],
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+
+f_at(float ratio) => anchor + ratio * atrVal
+
+// the named ladder used for targets (0 = PDC)
+var array<float> RUNGS = array.from(-1.618, -1.272, -1.0, -0.786, -0.618,
+     -0.5, -0.382, -0.236, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0,
+     1.272, 1.618)
+
+f_rung_name(float r) =>
+    r == 0.0 ? "PDC" :
+     r == 0.236 ? "call trig" : r == -0.236 ? "put trig" :
+     r == 0.382 ? "+0.382" : r == -0.382 ? "-0.382" :
+     r == 0.5 ? "+0.5中位" : r == -0.5 ? "-0.5中位" :
+     r == 0.618 ? "+0.618" : r == -0.618 ? "-0.618" :
+     r == 0.786 ? "+0.786" : r == -0.786 ? "-0.786" :
+     r == 1.0 ? "+1ATR" : r == -1.0 ? "-1ATR" :
+     r == 1.272 ? "+1.272" : r == -1.272 ? "-1.272" :
+     r == 1.618 ? "+1.618" : "-1.618"
+
+// next rung strictly beyond `px` in direction `dir` (+1 up / -1 down)
+f_next_rung(float px, int dir) =>
+    float best = na
+    if atrVal > 0
+        for i = 0 to array.size(RUNGS) - 1
+            float lv = f_at(array.get(RUNGS, i))
+            if dir > 0 and lv > px + syminfo.mintick and (na(best) or lv < best)
+                best := lv
+            if dir < 0 and lv < px - syminfo.mintick and (na(best) or lv > best)
+                best := lv
+    // beyond the ladder: keep the named step size (0.236 ATR), not an R multiple
+    na(best) ? px + dir * 0.236 * atrVal : best
+
+// ── Session ranges ────────────────────────────────────────────────────────
+f_sess_range(string sess, bool enabled) =>
+    var float hi = na
+    var float lo = na
+    bool inS = enabled and
+         not na(time(timeframe.period, sess, "America/New_York"))
+    if inS and not inS[1]
+        hi := high
+        lo := low
+    else if inS
+        hi := math.max(nz(hi, high), high)
+        lo := math.min(nz(lo, low), low)
+    [hi, lo]
+
+[onHigh, onLow] = f_sess_range("1800-0930", showOvernight)
+[pmHigh, pmLow] = f_sess_range("0400-0930", showPremarket)
+bool inRTH = not na(time(timeframe.period, "0930-1600", "America/New_York"))
+
+// ── Ribbon ────────────────────────────────────────────────────────────────
+float e8 = ta.ema(close, 8)
+float e13 = ta.ema(close, 13)
+float e21 = ta.ema(close, 21)
+float e34 = ta.ema(close, 34)
+float e48 = ta.ema(close, 48)
+bool stackBull = e8 > e13 and e13 > e21 and e21 > e34 and e34 > e48
+bool stackBear = e8 < e13 and e13 < e21 and e21 < e34 and e34 < e48
+
+var int sBull = 0
+var int sBear = 0
+sBull := stackBull ? sBull + 1 : 0
+sBear := stackBear ? sBear + 1 : 0
+
+// TimeWarp (display-only context; updates with the live higher-TF bar,
+// same as the author's original — deliberately NOT used in signal logic)
+[tw13, tw48] = request.security(syminfo.tickerid, twTF,
+     [ta.ema(close, 13), ta.ema(close, 48)],
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+// ── Position state (single position, all sessions) ────────────────────────
+var int pDir = 0             // 0 flat, +1 long, -1 short
+var string pSetup = ""
+var string pSession = ""
+var float pEntry = na
+var float pRisk = na
+var float pProt = na         // protective price (hard stop for accounting)
+var float pT1 = na
+var float pT2 = na
+var bool pT1done = false
+var bool pT2done = false
+var float pFrac = 1.0
+var float pLegsR = 0.0
+var int pEntryT = na
+
+// ── Setup state machines ──────────────────────────────────────────────────
+// Ribbon Recovery: trend → pullback to/below the 13 → close recovers the 13.
+var int recL = 0             // 0 idle, 1 pullback in progress (long side)
+var float recLExt = na       // pullback extreme (protective for accounting)
+var int recS = 0
+var float recSExt = na
+// Vomy: stacked trend → close breaks 8 & 13 → retest of 13 = entry.
+var int vomS = 0             // short-side vomy after bull stack
+var float vomSFin = na       // the fin high (protective)
+var bool vomSConf = false    // broke & held the 48
+var int vomL = 0             // inverse vomy (long) after bear stack
+var float vomLFin = na
+var bool vomLConf = false
+
+// ledger aggregates: [all, rth, on, recovery, vomy]
+var array<int> agN = array.new<int>(5, 0)
+var array<int> agW = array.new<int>(5, 0)
+var array<float> agR = array.new<float>(5, 0.0)
+
+f_led_add(bool isRth, bool isRec, float r) =>
+    int[] idxs = array.from(0, isRth ? 1 : 2, isRec ? 3 : 4)
+    for i = 0 to 2
+        int k = array.get(idxs, i)
+        array.set(agN, k, array.get(agN, k) + 1)
+        array.set(agR, k, array.get(agR, k) + r)
+        if r > 0
+            array.set(agW, k, array.get(agW, k) + 1)
+
+// holding-period lines (singletons, set — never recreated)
+var line lnEntry = line.new(na, na, na, na, xloc=xloc.bar_time,
+     color=color.new(color.gray, 100))
+var line lnProt = line.new(na, na, na, na, xloc=xloc.bar_time,
+     color=color.new(color.gray, 100))
+var line lnT1 = line.new(na, na, na, na, xloc=xloc.bar_time,
+     color=color.new(color.gray, 100))
+var line lnT2 = line.new(na, na, na, na, xloc=xloc.bar_time,
+     color=color.new(color.gray, 100))
+
+f_lines_show(bool on) =>
+    color cE = on ? color.new(color.white, 30) : color.new(color.gray, 100)
+    color cP = on ? color.new(color.red, 20) : color.new(color.gray, 100)
+    color cT = on ? color.new(color.aqua, 30) : color.new(color.gray, 100)
+    line.set_color(lnEntry, cE)
+    line.set_color(lnProt, cP)
+    line.set_color(lnT1, cT)
+    line.set_color(lnT2, cT)
+
+string alertQ = ""
+
+// ══ Trade engine (confirmed bars only — no repaint) ═══════════════════════
+if barstate.isconfirmed
+    // ---- manage open position first ----
+    if pDir != 0
+        bool hitProt = pDir > 0 ? low <= pProt : high >= pProt
+        bool hitT1 = not pT1done and (pDir > 0 ? high >= pT1 : low <= pT1)
+        bool hitT2 = pT1done and not pT2done and
+             (pDir > 0 ? high >= pT2 : low <= pT2)
+        bool structOut = pDir > 0 ? close < e13 : close > e13
+        if hitProt
+            // conservative: protective first when ambiguous
+            pLegsR += pFrac * (pProt - pEntry) * pDir / pRisk
+            float trR = pLegsR
+            bool isRth = pSession == "RTH"
+            f_led_add(isRth, pSetup == "Recovery", trR)
+            f_keep(label.new(time_close, pProt,
+                 (pDir > 0 ? "平多 " : "平空 ") +
+                 (trR >= 0 ? "+" : "") + str.tostring(trR, "#.##") + "R",
+                 xloc=xloc.bar_time,
+                 style=pDir > 0 ? label.style_label_down : label.style_label_up,
+                 color=color.new(trR >= 0 ? color.teal : color.maroon, 0),
+                 textcolor=color.white, size=size.normal,
+                 tooltip="保护位离场｜" + pSetup + "｜" + pSession))
+            alertQ += "【IDMv14】" + (pDir > 0 ? "平多 " : "平空 ") +
+                 str.tostring(trR, "#.##") + "R（保护位）｜" + pSetup + "｜" +
+                 pSession + "｜累计 " +
+                 str.tostring(array.get(agR, 0), "#.#") + "R\n"
+            pDir := 0
+        else
+            if hitT1
+                pLegsR += 0.50 * (pT1 - pEntry) * pDir / pRisk
+                pFrac -= 0.50
+                pT1done := true
+                alertQ += "【IDMv14】T1 到达 " + str.tostring(pT1,
+                     format.mintick) + "，兑现 50%。剩余止损不动。\n"
+            if hitT2
+                pLegsR += 0.25 * (pT2 - pEntry) * pDir / pRisk
+                pFrac -= 0.25
+                pT2done := true
+                alertQ += "【IDMv14】T2 到达 " + str.tostring(pT2,
+                     format.mintick) + "，再兑现 25%，剩余为 runner。\n"
+            if structOut
+                pLegsR += pFrac * (close - pEntry) * pDir / pRisk
+                float trR = pLegsR
+                bool isRth = pSession == "RTH"
+                f_led_add(isRth, pSetup == "Recovery", trR)
+                f_keep(label.new(time_close, close,
+                     (pDir > 0 ? "平多 " : "平空 ") +
+                     (trR >= 0 ? "+" : "") + str.tostring(trR, "#.##") + "R",
+                     xloc=xloc.bar_time,
+                     style=pDir > 0 ? label.style_label_down :
+                          label.style_label_up,
+                     color=color.new(trR >= 0 ? color.teal : color.maroon, 0),
+                     textcolor=color.white, size=size.normal,
+                     tooltip="收盘穿 13EMA 结构性离场｜" + pSetup + "｜" +
+                          pSession))
+                alertQ += "【IDMv14】" + (pDir > 0 ? "平多 " : "平空 ") +
+                     str.tostring(trR, "#.##") + "R（结构离场）｜" + pSetup +
+                     "｜" + pSession + "｜累计 " +
+                     str.tostring(array.get(agR, 0), "#.#") + "R\n"
+                pDir := 0
+
+    // ---- setup state machines (only look for entries when flat) ----
+    // Recovery long
+    if enRecovery
+        if recL == 0 and sBull >= stackBars and close < e13
+            recL := 1
+            recLExt := low
+        else if recL == 1
+            recLExt := math.min(recLExt, low)
+            if close < e34 or stackBear
+                recL := 0
+            else if close > e13
+                if pDir == 0
+                    float risk = close - recLExt
+                    if risk >= minRiskPts
+                        pDir := 1
+                        pSetup := "Recovery"
+                        pSession := inRTH ? "RTH" : "夜盘"
+                        pEntry := close
+                        pRisk := risk
+                        pProt := recLExt
+                        pT1 := f_next_rung(close, 1)
+                        pT2 := f_next_rung(pT1, 1)
+                        pT1done := false
+                        pT2done := false
+                        pFrac := 1.0
+                        pLegsR := 0.0
+                        pEntryT := time_close
+                recL := 0
+        // Recovery short
+        if recS == 0 and sBear >= stackBars and close > e13
+            recS := 1
+            recSExt := high
+        else if recS == 1
+            recSExt := math.max(recSExt, high)
+            if close > e34 or stackBull
+                recS := 0
+            else if close < e13
+                if pDir == 0
+                    float risk = recSExt - close
+                    if risk >= minRiskPts
+                        pDir := -1
+                        pSetup := "Recovery"
+                        pSession := inRTH ? "RTH" : "夜盘"
+                        pEntry := close
+                        pRisk := risk
+                        pProt := recSExt
+                        pT1 := f_next_rung(close, -1)
+                        pT2 := f_next_rung(pT1, -1)
+                        pT1done := false
+                        pT2done := false
+                        pFrac := 1.0
+                        pLegsR := 0.0
+                        pEntryT := time_close
+                recS := 0
+
+    // Vomy short (after bull trend)
+    if enVomy
+        if vomS == 0 and sBull[1] >= stackBars and close < e13 and close < e8
+            vomS := 2
+            vomSFin := ta.highest(high, 10)
+            vomSConf := false
+        else if vomS == 2
+            vomSFin := math.max(vomSFin, high)
+            if close < e48
+                vomSConf := true
+            if close > e13
+                vomS := 0                      // recovered = vomy failed
+            else if high >= e13
+                if pDir == 0
+                    float risk = vomSFin - close
+                    if risk >= minRiskPts
+                        pDir := -1
+                        pSetup := "Vomy"
+                        pSession := inRTH ? "RTH" : "夜盘"
+                        pEntry := close
+                        pRisk := risk
+                        pProt := vomSFin
+                        pT1 := f_next_rung(close, -1)
+                        pT2 := f_next_rung(pT1, -1)
+                        pT1done := false
+                        pT2done := false
+                        pFrac := 1.0
+                        pLegsR := 0.0
+                        pEntryT := time_close
+                        vomS := 0
+        // inverse Vomy long (after bear trend)
+        if vomL == 0 and sBear[1] >= stackBars and close > e13 and close > e8
+            vomL := 2
+            vomLFin := ta.lowest(low, 10)
+            vomLConf := false
+        else if vomL == 2
+            vomLFin := math.min(vomLFin, low)
+            if close > e48
+                vomLConf := true
+            if close < e13
+                vomL := 0
+            else if low <= e13
+                if pDir == 0
+                    float risk = close - vomLFin
+                    if risk >= minRiskPts
+                        pDir := 1
+                        pSetup := "Vomy"
+                        pSession := inRTH ? "RTH" : "夜盘"
+                        pEntry := close
+                        pRisk := risk
+                        pProt := vomLFin
+                        pT1 := f_next_rung(close, 1)
+                        pT2 := f_next_rung(pT1, 1)
+                        pT1done := false
+                        pT2done := false
+                        pFrac := 1.0
+                        pLegsR := 0.0
+                        pEntryT := time_close
+                        vomL := 0
+
+    // ---- entry effects (label + alert) fire on the entry bar ----
+    if pDir != 0 and pEntryT == time_close
+        f_keep(label.new(time_close, pEntry,
+             pDir > 0 ? "多 " + pSetup : "空 " + pSetup,
+             xloc=xloc.bar_time,
+             style=pDir > 0 ? label.style_label_up : label.style_label_down,
+             color=color.new(pDir > 0 ? color.green : color.red, 0),
+             textcolor=color.white, size=size.normal,
+             tooltip="入场 " + str.tostring(pEntry, format.mintick) +
+                  "｜保护 " + str.tostring(pProt, format.mintick) +
+                  "｜T1 " + str.tostring(pT1, format.mintick) +
+                  "｜T2 " + str.tostring(pT2, format.mintick) +
+                  "｜" + pSession))
+        alertQ += "【IDMv14】" + (pDir > 0 ? "开多 " : "开空 ") + pSetup +
+             "｜" + pSession + "｜入场 " + str.tostring(pEntry, format.mintick) +
+             "｜保护 " + str.tostring(pProt, format.mintick) +
+             "（风险 " + str.tostring(pRisk, "#.#") + " 点）｜T1 " +
+             str.tostring(pT1, format.mintick) + " 兑现50%｜T2 " +
+             str.tostring(pT2, format.mintick) + " 兑现25%｜剩余跟 13EMA\n"
+
+// holding-period line updates
+if barstate.islast
+    bool hold = pDir != 0
+    f_lines_show(hold)
+    if hold
+        int t1x = pEntryT
+        int t2x = time_close + 20 * (time_close - time_close[1])
+        line.set_xy1(lnEntry, t1x, pEntry)
+        line.set_xy2(lnEntry, t2x, pEntry)
+        line.set_xy1(lnProt, t1x, pProt)
+        line.set_xy2(lnProt, t2x, pProt)
+        line.set_xy1(lnT1, t1x, pT1)
+        line.set_xy2(lnT1, t2x, pT1)
+        line.set_xy1(lnT2, t1x, pT2)
+        line.set_xy2(lnT2, t2x, pT2)
+
+if enableAlerts and alertQ != ""
+    alert(alertQ, alert.freq_once_per_bar_close)
+
+// ── Plots: ATR ladder ─────────────────────────────────────────────────────
+plot(f_at(0.0), "PDC", color=color.new(color.white, 0), linewidth=2,
+     style=plot.style_stepline)
+plot(f_at(trigPct), "Call trigger", color=color.new(color.aqua, 0),
+     style=plot.style_stepline)
+plot(f_at(-trigPct), "Put trigger", color=color.new(color.yellow, 0),
+     style=plot.style_stepline)
+plot(showFib ? f_at(0.382) : na, "+0.382", color=color.new(color.gray, 40),
+     style=plot.style_stepline)
+plot(showFib ? f_at(-0.382) : na, "-0.382", color=color.new(color.gray, 40),
+     style=plot.style_stepline)
+plot(showFib ? f_at(0.5) : na, "+0.5", color=color.new(color.silver, 25),
+     style=plot.style_stepline)
+plot(showFib ? f_at(-0.5) : na, "-0.5", color=color.new(color.silver, 25),
+     style=plot.style_stepline)
+plot(showFib ? f_at(0.618) : na, "+0.618", color=color.new(color.silver, 25),
+     style=plot.style_stepline)
+plot(showFib ? f_at(-0.618) : na, "-0.618", color=color.new(color.silver, 25),
+     style=plot.style_stepline)
+plot(showFib ? f_at(0.786) : na, "+0.786", color=color.new(color.gray, 40),
+     style=plot.style_stepline)
+plot(showFib ? f_at(-0.786) : na, "-0.786", color=color.new(color.gray, 40),
+     style=plot.style_stepline)
+plot(f_at(1.0), "+1 ATR", color=color.new(color.white, 20),
+     style=plot.style_stepline)
+plot(f_at(-1.0), "-1 ATR", color=color.new(color.white, 20),
+     style=plot.style_stepline)
+plot(showExt ? f_at(1.272) : na, "+1.272", color=color.new(color.gray, 50),
+     style=plot.style_stepline)
+plot(showExt ? f_at(-1.272) : na, "-1.272", color=color.new(color.gray, 50),
+     style=plot.style_stepline)
+plot(showExt ? f_at(1.618) : na, "+1.618", color=color.new(color.gray, 50),
+     style=plot.style_stepline)
+plot(showExt ? f_at(-1.618) : na, "-1.618", color=color.new(color.gray, 50),
+     style=plot.style_stepline)
+
+// session levels
+plot(showOvernight ? onHigh : na, "夜盘高", color=color.new(color.purple, 25),
+     style=plot.style_stepline)
+plot(showOvernight ? onLow : na, "夜盘低", color=color.new(color.purple, 25),
+     style=plot.style_stepline)
+plot(showPremarket ? pmHigh : na, "盘前高", color=color.new(color.orange, 30),
+     style=plot.style_stepline)
+plot(showPremarket ? pmLow : na, "盘前低", color=color.new(color.orange, 30),
+     style=plot.style_stepline)
+plot(showPrevDay ? pdh : na, "PDH", color=color.new(color.blue, 40),
+     style=plot.style_stepline)
+plot(showPrevDay ? pdl : na, "PDL", color=color.new(color.blue, 40),
+     style=plot.style_stepline)
+
+// ribbon
+color ribCol = stackBull ? color.new(color.green, 55) :
+     stackBear ? color.new(color.red, 55) : color.new(color.gray, 65)
+plot(showRibbon ? e8 : na, "EMA8", color=ribCol)
+plot(showRibbon ? e13 : na, "EMA13", color=showRibbon ?
+     color.new(color.white, 35) : na, linewidth=2)
+plot(showRibbon ? e21 : na, "EMA21", color=ribCol)
+plot(showRibbon ? e34 : na, "EMA34", color=ribCol)
+plot(showRibbon ? e48 : na, "EMA48", color=showRibbon ?
+     color.new(color.fuchsia, 35) : na, linewidth=2)
+plot(showTimeWarp ? tw13 : na, "TW13", color=color.new(color.white, 70),
+     linewidth=3)
+plot(showTimeWarp ? tw48 : na, "TW48", color=color.new(color.fuchsia, 70),
+     linewidth=3)
+
+// ── Playbook + ledger table ───────────────────────────────────────────────
+f_fmt_led(int k) =>
+    int n = array.get(agN, k)
+    n == 0 ? "0 笔" : str.tostring(n) + "笔 " +
+         str.tostring(100.0 * array.get(agW, k) / n, "#") + "% " +
+         (array.get(agR, k) >= 0 ? "+" : "") +
+         str.tostring(array.get(agR, k), "#.#") + "R"
+
+var table tb = table.new(position.bottom_right, 2, 7, border_width=1,
+     frame_width=1, frame_color=color.new(color.gray, 60))
+
+if barstate.islast
+    float upT = f_next_rung(close, 1)
+    float dnT = f_next_rung(close, -1)
+    string ctx = (stackBull ? "多头排列" : stackBear ? "空头排列" : "无排列") +
+         "｜" + (inRTH ? "RTH" : "夜盘") + "｜位置 " +
+         (atrVal > 0 ? ((close - anchor) / atrVal >= 0 ? "+" : "") +
+         str.tostring((close - anchor) / atrVal, "#.##") + " ATR" : "…")
+    string stateTxt = pDir != 0 ?
+         (pDir > 0 ? "持多 " : "持空 ") + pSetup + "｜入场 " +
+             str.tostring(pEntry, format.mintick) + "｜" +
+             (pT1done ? (pT2done ? "runner 跟 13EMA" : "等 T2 " +
+             str.tostring(pT2, format.mintick)) : "等 T1 " +
+             str.tostring(pT1, format.mintick)) :
+         (recL == 1 ? "Recovery多：回踩中，等收复 13" :
+          recS == 1 ? "Recovery空：反抽中，等跌破 13" :
+          vomS == 2 ? "Vomy空：已破8/13，等回抽13" + (vomSConf ? "（48已破）" : "") :
+          vomL == 2 ? "invVomy多：已破8/13，等回踩13" + (vomLConf ? "（48已破）" : "") :
+          "空仓待命：等回踩收复 / 趋势破坏")
+    if showPlaybook
+        table.cell(tb, 0, 0, "语境", text_color=color.silver, text_size=size.small)
+        table.cell(tb, 1, 0, ctx, text_color=color.white, text_size=size.small)
+        table.cell(tb, 0, 1, "上方分支", text_color=color.silver, text_size=size.small)
+        table.cell(tb, 1, 1, "守住后上破 → " + str.tostring(upT, format.mintick) +
+             "，再 " + str.tostring(f_next_rung(upT, 1), format.mintick),
+             text_color=color.aqua, text_size=size.small)
+        table.cell(tb, 0, 2, "下方分支", text_color=color.silver, text_size=size.small)
+        table.cell(tb, 1, 2, "失守后下破 → " + str.tostring(dnT, format.mintick) +
+             "，再 " + str.tostring(f_next_rung(dnT, -1), format.mintick),
+             text_color=color.yellow, text_size=size.small)
+        table.cell(tb, 0, 3, "状态", text_color=color.silver, text_size=size.small)
+        table.cell(tb, 1, 3, stateTxt, text_color=color.white, text_size=size.small)
+    if showLedger
+        table.cell(tb, 0, 4, "账本·全部", text_color=color.silver, text_size=size.small)
+        table.cell(tb, 1, 4, f_fmt_led(0), text_color=color.white, text_size=size.small)
+        table.cell(tb, 0, 5, "RTH／夜盘", text_color=color.silver, text_size=size.small)
+        table.cell(tb, 1, 5, f_fmt_led(1) + " ／ " + f_fmt_led(2),
+             text_color=color.white, text_size=size.small)
+        table.cell(tb, 0, 6, "Recov／Vomy", text_color=color.silver, text_size=size.small)
+        table.cell(tb, 1, 6, f_fmt_led(3) + " ／ " + f_fmt_led(4),
+             text_color=color.white, text_size=size.small)
+
+// audit
+plot(pDir, "audit: dir", color=na, display=display.data_window)
+plot(array.get(agR, 0), "audit: total R", color=na, display=display.data_window)
+plot(anchor, "audit: anchor", color=na, display=display.data_window)
+plot(atrVal, "audit: atr", color=na, display=display.data_window)
