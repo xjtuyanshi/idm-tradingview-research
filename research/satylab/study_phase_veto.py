@@ -270,12 +270,30 @@ DISP_N_SHORT = 3
 
 
 def read_all(ds: DS) -> list[Reading]:
+    """Phase readings AS OF THE FILL.
+
+    ⚠ Defect fixed 2026-07-28.  `Bar.dt` in this codebase is the bar's START.
+    The fill happens at the signal bar's CLOSE, i.e. `entry_dt + exec_tf`.
+    The first draft of this module read the lower/higher timeframes with
+    `PhaseSeries.at(t.entry_dt)`, which returns the last sub-bar that closed at
+    or before the signal bar OPENED — so the 5m/3m reading deliberately
+    excluded the two (or three) sub-bars INSIDE the signal bar, i.e. exactly
+    the tape that produced the signal.  On a 10m chart that is a 10-minute-stale
+    quote masquerading as "the 3m is extreme right now".  It is not
+    conservative, it simply measures a different thing.
+
+    `fill_dt` below is the correct decision timestamp: every sub-bar that ends
+    at or before it has closed and is known.  No lookahead is introduced —
+    the 5m bar spanning [T+5, T+10) closes at the same instant as the 10m bar
+    spanning [T, T+10).
+    """
     idx = {b.dt: i for i, b in enumerate(ds.bars)}
     atr = pf.ta_atr(ds.bars, pf.ATR_LEN)
     out: list[Reading] = []
     for t in ds.base:
         i = idx[t.entry_dt]
         a = atr[i]
+        fill_dt = t.entry_dt + timedelta(minutes=ds.exec_tf)
 
         def disp(n: int) -> float | None:
             if i - n < 0 or a is None or a <= 0:
@@ -288,9 +306,9 @@ def read_all(ds: DS) -> list[Reading]:
         out.append(Reading(
             t=t,
             p_exec=signed(ds.ph_exec.on_bar(t.entry_dt), t.direction),
-            p_low=(signed(ds.ph_low.at(t.entry_dt), t.direction)
+            p_low=(signed(ds.ph_low.at(fill_dt), t.direction)
                    if ds.ph_low is not None else None),
-            p_high=signed(ds.ph_high.at(t.entry_dt), t.direction),
+            p_high=signed(ds.ph_high.at(fill_dt), t.direction),
             d3=disp(DISP_N), d3_short=disp(DISP_N_SHORT),
             bar_tr=(None if (a is None or a <= 0) else tr / a * 100.0)))
     return out
@@ -370,6 +388,72 @@ def spearman(xs: list[float], ys: list[float]) -> float:
     num = sum((a - mx) * (b - my) for a, b in zip(rx, ry))
     den = math.sqrt(sum((a - mx) ** 2 for a in rx) * sum((b - my) ** 2 for b in ry))
     return num / den if den else float("nan")
+
+
+# ────────────────── net-R plumbing (added for the V15 brief) ─────────────────
+def net_r(t: Trade) -> float:
+    """One trade's R **after** the 0.6-point spread is charged to its own risk.
+
+    R is a ratio, so the cost is not a constant: a trade risking 3 points pays
+    0.20 R for the same 0.6 points that a trade risking 12 points pays 0.05 R
+    for.  Every "均净R" in this file is the mean of THIS quantity, never
+    `总毛R/n − 常数`.
+    """
+    return t.r - (SPREAD / t.risk if t.risk > 0 else 0.0)
+
+
+def mean_sd(xs: list[float]) -> tuple[float, float]:
+    if not xs:
+        return float("nan"), float("nan")
+    mu = sum(xs) / len(xs)
+    sd = st.stdev(xs) if len(xs) > 1 else 0.0
+    return mu, sd
+
+
+MIN_T_GROUP = 5
+
+
+def welch_t(a: list[float], b: list[float]) -> float:
+    """Two-sample Welch t (kept vs vetoed).  Unequal n, unequal variance.
+
+    Refuses to return a number when either group has fewer than MIN_T_GROUP
+    observations.  A t built on a 2-trade group is not a weak statistic, it is
+    a random number with a t-shaped label on it: its denominator is the sample
+    sd of two points.  Letting such a value into the family's max-|z| ranking
+    would hand the headline to the smallest cell in the study.
+    """
+    if len(a) < MIN_T_GROUP or len(b) < MIN_T_GROUP:
+        return float("nan")
+    ma, sa = mean_sd(a)
+    mb, sb = mean_sd(b)
+    se2 = sa * sa / len(a) + sb * sb / len(b)
+    return (ma - mb) / math.sqrt(se2) if se2 > 0 else float("nan")
+
+
+def fmt(x: float, nd: int = 3, plus: bool = True) -> str:
+    if x != x:
+        return "–"
+    return f"{x:+.{nd}f}" if plus else f"{x:.{nd}f}"
+
+
+def race_cell(ds: DS, trades: list[Trade], label: str = "cell",
+              min_n: int = 8) -> dict | None:
+    """race() + net-R summary for one cell; registers the cell with FAM."""
+    FAM.cell()
+    if len(trades) < min_n:
+        return None
+    rc = race(trades, ds.bars, ds.subs)
+    if rc["n"] == 0:
+        return None
+    FAM.z(rc["z"], f"{ds.short} {label} z_geom")
+    nr = [net_r(t) for t in trades]
+    mu, sd = mean_sd(nr)
+    rc = dict(rc)
+    rc["n_all"] = len(trades)
+    rc["net_avg"] = mu
+    rc["net_tot"] = sum(nr)
+    rc["net_sd"] = sd
+    return rc
 
 
 # ═══════════════════════════════ the report ══════════════════════════════════
@@ -526,10 +610,68 @@ def main() -> None:
               f"{sum(1 for x in v if abs(x) >= DISTRIB)} |")
             FAM.cell()
     w()
-    w("低周期确实比执行周期散得开（E 数据集 3m 的 p1/p99 是 −60/+71，"
-      "10m 只有 −25/+44），**但仍然够不到 ±100**。"
+    w("低周期确实比执行周期散得开（E 数据集 3m 的 p95/p99 是 +51/+71，"
+      "10m 只有 +39/+45），**但落在 ±100 之外的仍然是个位数**："
+      "B 的 5m 只有 1 笔，E 的 3m 只有 1 笔。"
       "上级周期（30m/4h）反而最散——因为 30m 的 EMA21 覆盖 10 小时，"
-      "入场点离它可以很远。这条留到 S3。")
+      "入场点离它可以很远。这条留到 S3。"
+      "（D·ES1h 的「低」与「执行」是同一条序列：730 天样本没有比 1h 更细的数据，"
+      "两行必然逐位相同，列在这里只是为了不留空。）")
+    w()
+
+    # ── S1.3 the timing defect, measured ────────────────────────────────────
+    w("### S1.3 口径自查：低周期读数必须取在**成交那一刻**，不是信号 K 的开盘")
+    w()
+    w("本仓库里 `Bar.dt` 是 K 的**起始**时间，而 v14 的成交发生在信号 K 的"
+      "**收盘**，即 `entry_dt + 执行周期`。本模块的初稿用 "
+      "`PhaseSeries.at(entry_dt)` 取低周期读数，那返回的是"
+      "**在信号 K 开盘之前就已收盘的**最后一根子 K——"
+      "换句话说，它把信号 K 内部那两根 5m（或三根 3m）子 K 整个丢掉了，"
+      "而那正是造成信号的那段行情。10m 图上这是一个**迟 10 分钟的报价**"
+      "冒充「3m 现在很极端」。这不是保守，是量错了东西。")
+    w()
+    w("已改为 `at(entry_dt + 执行周期)`——该时刻所有子 K 都已收盘，"
+      "不引入任何前视（跨 10m 的 5m 子 K 与 10m 母 K 同一瞬间收盘）。"
+      "下表量化这个错误有多大：")
+    w()
+    w("| 数据集 | 低周期 | ρ(迟报, 成交时) | 迟报 p50 | 成交时 p50 | "
+      "迟报 p95 | 成交时 p95 | 单腿 Welch t（迟报） | 单腿 Welch t（成交时） |")
+    w("|---|---|---|---|---|---|---|---|---|")
+    for ds in sets:
+        if ds.ph_low is None or ds.low_tf == ds.exec_tf:
+            continue
+        stale, fresh, nr = [], [], []
+        for t in ds.base:
+            fdt = t.entry_dt + timedelta(minutes=ds.exec_tf)
+            a = signed(ds.ph_low.at(t.entry_dt), t.direction)
+            b = signed(ds.ph_low.at(fdt), t.direction)
+            if a is None or b is None:
+                continue
+            stale.append(a)
+            fresh.append(b)
+            nr.append(net_r(t))
+        if len(stale) < 40:
+            continue
+        cs = qtile(sorted(stale), 2 / 3)
+        cf = qtile(sorted(fresh), 2 / 3)
+        ts = welch_t([v for v, x in zip(nr, stale) if x >= cs],
+                     [v for v, x in zip(nr, stale) if x < cs])
+        tf_ = welch_t([v for v, x in zip(nr, fresh) if x >= cf],
+                      [v for v, x in zip(nr, fresh) if x < cf])
+        FAM.cell(2)
+        FAM.z(tf_, f"{ds.short} 低周期单腿 t（成交时）")
+        w(f"| {ds.short} | {ds.low_tf}m | {spearman(stale, fresh):+.3f} | "
+          f"{qtile(sorted(stale), .5):+.0f} | {qtile(sorted(fresh), .5):+.0f} | "
+          f"{qtile(sorted(stale), .95):+.0f} | {qtile(sorted(fresh), .95):+.0f} | "
+          f"{fmt(ts, 2)} | {fmt(tf_, 2)} |")
+    w()
+    w("**必须说出来的一件事**：用迟报口径时，「低周期读数靠前 = 单笔更好」在主样本 B "
+      "上跑出 Welch t ≈ **+2.2**（66.7% 分位切分），改成成交时口径后掉到 **+0.7**。"
+      "那个 +2.2 是**纯粹的口径产物**——迟报读数实际上说的是"
+      "「信号 K 之前那段有多顺」，与「信号 K 本身有多急」是两个变量。"
+      "如果本轮没有发现这个 bug，报告里就会多出一条"
+      "「低周期动能靠前是好事」的假结论。这里把它记下来，"
+      "作为「先验证口径再解释系数」的一个实例。")
     w()
 
     # ═════════════════════ S2 single-timeframe zones ════════════════════════
@@ -601,6 +743,106 @@ def main() -> None:
             g = [r.t for r in rd if lo_ <= r.p_exec < hi_]
             w(r_row(f"Q{qi+1}", ds, g))
         w()
+
+    # ═══════════ S2.3 quantile x DIRECTION (brief item 1, unfolded) ══════════
+    w("### S2.3 分位分层 × 交易方向（把 signed 拆回去看）")
+    w()
+    w("S2/S2.2 用的是 `signed = osc × direction`，那等于**先假定多空对称**。"
+      "本节把这个假定拆开检验：横轴用**原始 Phase**（不乘方向）的五分位，"
+      "纵轴用交易方向。若「顺向极端别追」成立，"
+      "**做多 × 原始 Phase 最高档**（追涨）与**做空 × 原始 Phase 最低档**（杀跌）"
+      "这两格应当同时变差；如果只有一边差，那不是「追」的问题，"
+      "而是这段样本的方向性偏移（趋势/漂移）。")
+    w()
+    w("均净R = 每笔各自扣 0.6 点 ÷ 该笔风险后的 R 的**均值**（不是总毛R/n 减常数）。")
+    w()
+    chase_ts: list[tuple[str, float]] = []
+    for ds in sets:
+        rd = [r for r in readings[ds.short] if r.p_exec is not None]
+        if len(rd) < 60:
+            w(f"*{ds.short}：n={len(rd)}，不足以做 5×2，跳过。*")
+            w()
+            continue
+        raws = sorted(r.p_exec * r.t.direction for r in rd)
+        cuts = [qtile(raws, f) for f in (0.2, 0.4, 0.6, 0.8)]
+        nL = sum(1 for r in rd if r.t.direction > 0)
+        w(f"**{ds.short}**（原始 Phase 五分位门槛 "
+          + " / ".join(f"{c:+.0f}" for c in cuts)
+          + f"；多 {nL} 笔 / 空 {len(rd)-nL} 笔）")
+        w()
+        w("| 方向 | 原始 Phase 档 | n | 已裁决 n | T1 先到 | 几何零假设 | 超额 | "
+          "z_geom | 均净R | 总净R |")
+        w("|---|---|---|---|---|---|---|---|---|---|")
+        bounds = [-1e9] + cuts + [1e9]
+        for dname, dv in (("做多 ↑", 1), ("做空 ↓", -1)):
+            for qi in range(5):
+                lo_, hi_ = bounds[qi], bounds[qi + 1]
+                g = [r.t for r in rd if r.t.direction == dv
+                     and lo_ <= r.p_exec * r.t.direction < hi_]
+                rc = race_cell(ds, g, f"{dname} Q{qi+1}")
+                if rc is None:
+                    nr = [net_r(t) for t in g]
+                    w(f"| {dname} | Q{qi+1} | {len(g)} | – | – | – | – | – | "
+                      f"{fmt(sum(nr)/len(nr)) if nr else '–'} | "
+                      f"{fmt(sum(nr), 1) if nr else '–'} |")
+                    continue
+                w(f"| {dname} | Q{qi+1} | {rc['n_all']} | {rc['n']} | "
+                  f"{100*rc['obs']:.1f}% | {100*rc['null']:.1f}% | "
+                  f"{100*(rc['obs']-rc['null']):+.1f}pp | {rc['z']:+.2f} | "
+                  f"{fmt(rc['net_avg'])} | {fmt(rc['net_tot'], 1)} |")
+            allg = [r.t for r in rd if r.t.direction == dv]
+            rc = race_cell(ds, allg, f"{dname} 全部")
+            if rc:
+                w(f"| {dname} | **全部** | {rc['n_all']} | {rc['n']} | "
+                  f"{100*rc['obs']:.1f}% | {100*rc['null']:.1f}% | "
+                  f"{100*(rc['obs']-rc['null']):+.1f}pp | {rc['z']:+.2f} | "
+                  f"{fmt(rc['net_avg'])} | {fmt(rc['net_tot'], 1)} |")
+        # the two "chasing" corners, compared head to head
+        top_long = [r.t for r in rd if r.t.direction > 0
+                    and r.p_exec * r.t.direction >= cuts[3]]
+        bot_short = [r.t for r in rd if r.t.direction < 0
+                     and r.p_exec * r.t.direction < cuts[0]]
+        chase = top_long + bot_short
+        chase_ids = {id(t) for t in chase}
+        rest = [r.t for r in rd if id(r.t) not in chase_ids]
+        if len(chase) >= 8 and len(rest) >= 8:
+            a = [net_r(t) for t in chase]
+            b = [net_r(t) for t in rest]
+            tt = welch_t(a, b)
+            FAM.cell()
+            FAM.z(tt, f"{ds.short} 追高杀跌角 t(净R)")
+            chase_ts.append((ds.short, tt))
+            w()
+            w(f"- **两个「追」角合并**（多×最高档 n={len(top_long)} ＋ "
+              f"空×最低档 n={len(bot_short)}，共 {len(chase)} 笔）："
+              f"均净R {fmt(sum(a)/len(a))}，其余 {len(rest)} 笔 {fmt(sum(b)/len(b))}，"
+              f"Welch t = **{tt:+.2f}**。")
+        w()
+    if chase_ts:
+        neg = sum(1 for _, v in chase_ts if v < 0)
+        big = max(chase_ts, key=lambda x: abs(x[1]))
+        w("**判读**：四个数据集的「两个追角 vs 其余」Welch t 分别是 "
+          + "、".join(f"{k} {v:+.2f}" for k, v in chase_ts)
+          + f"。**{neg}/{len(chase_ts)} 个为负**——方向与「别追」一致，"
+          f"但最大的 |t| 只有 {abs(big[1]):.2f}，"
+          f"连未校正的 1.96 都没到，更不用说 S8 的族门槛。")
+        w()
+        w("而且这四个数**不独立**：B（60 天 ES 5m 聚合）与 E（24 个 session 1m 重建）"
+          "跑的是**同一段行情的同一批交易**，E 是 B 的时间子集；"
+          "A 是同一段时间的 ^GSPC RTH。真正独立的只有 D（730 天 1h），"
+          "而 D 的 t = "
+          + next((f"{v:+.2f}" for k, v in chase_ts if k.startswith("D")), "–")
+          + "——**最接近零的那一个**。"
+          "换句话说：负号集中在互相重叠的短样本里，唯一的长独立样本没有复现。")
+        w()
+    w("单侧看还有一件事必须说：主样本 B 的**做多整体** z_geom = −2.58、"
+      "均净R −0.251，而**做空整体** z_geom = +0.74、均净R −0.085。"
+      "这个多空落差比任何 Phase 分档的落差都大，"
+      "且在 E（同期）上同向复现、在 D（730 天）上消失。"
+      "它更像是这两个月的方向漂移（这段样本指数在涨，逆势做多的回撤打法吃亏），"
+      "**不是** Phase 在说话——如果按 Phase 分档去解释它，就是把日历效应"
+      "贴到振荡器上。")
+    w()
 
     # ═════════════════════════ S3 the 3x3 table ═════════════════════════════
     w("---")
@@ -741,6 +983,136 @@ def main() -> None:
               f"超额 {ec:+.1f}pp (n={kc['n']})。")
         w()
 
+    # ══════ S3.4 the 2x2 Saty actually describes: LOW x EXEC (brief item 3) ══
+    w("### S3.4 **执行周期 × 低周期的 2×2**——Saty 那句话的字面结构")
+    w()
+    w("S3.1–S3.3 配的是「低周期 × 上级周期」。但 Saty 说的是"
+      "**「3m extreme, 10m has room」**——他的 10m 就是**下单的那张图**，"
+      "3m 是**看执行的那张图**。v14 跑在 10m，所以这句话的正确复现是"
+      "**低周期（3m/5m）× 执行周期（10m）**，不是低周期 × 30m。"
+      "v15 的实现只看了执行周期一条腿，这一节补上另一条。")
+    w()
+    w("四格（顺方向意义）：")
+    w()
+    w("| 低周期 | 执行周期 | 含义 | Saty 的处理 |")
+    w("|---|---|---|---|")
+    w("| 极端 | 极端 | 两个周期一起耗尽 | 反转候选，减仓/不进 |")
+    w("| 极端 | 有空间 | **关键格**：短线过热但主图还有路 | 整理/回撤，顺势仍有效 |")
+    w("| 有空间 | 极端 | 主图过热而短线已冷却 | （他没讨论） |")
+    w("| 有空间 | 有空间 | 两个周期都没话说 | PO 不发言 |")
+    w()
+
+    def _two_by_two(ds: DS, thr_low: float, thr_exec: float, tag: str) -> None:
+        rd = [r for r in readings[ds.short]
+              if r.p_low is not None and r.p_exec is not None]
+        if not rd:
+            return
+        w(f"**{ds.short}**｜低 {ds.low_tf}m × 执行 {ds.exec_tf}m｜{tag}"
+          f"（门槛 低 signed ≥ {thr_low:+.1f}，执行 signed ≥ {thr_exec:+.1f}；"
+          f"共 {len(rd)} 笔）")
+        w()
+        w("| 低周期 | 执行周期 | n | 已裁决 n | T1 先到 | 几何零假设 | 超额 | "
+          "z_geom | 均净R | 总净R |")
+        w("|---|---|---|---|---|---|---|---|---|---|")
+        buckets: dict[tuple[bool, bool], list[Trade]] = {}
+        for le in (True, False):
+            for he in (True, False):
+                buckets[(le, he)] = [
+                    r.t for r in rd
+                    if (r.p_low >= thr_low) == le and (r.p_exec >= thr_exec) == he]
+        names = {True: "极端", False: "有空间"}
+        for le in (True, False):
+            for he in (True, False):
+                g = buckets[(le, he)]
+                rc = race_cell(ds, g, f"2x2 {tag} {names[le]}/{names[he]}")
+                star = " ⭐" if (le and not he) else ""
+                if rc is None:
+                    nr = [net_r(t) for t in g]
+                    w(f"| {names[le]}{star} | {names[he]} | {len(g)} | – | – | – | "
+                      f"– | – | {fmt(sum(nr)/len(nr)) if nr else '–'} | "
+                      f"{fmt(sum(nr), 1) if nr else '–'} |")
+                    continue
+                w(f"| {names[le]}{star} | {names[he]} | {rc['n_all']} | {rc['n']} | "
+                  f"{100*rc['obs']:.1f}% | {100*rc['null']:.1f}% | "
+                  f"{100*(rc['obs']-rc['null']):+.1f}pp | {rc['z']:+.2f} | "
+                  f"{fmt(rc['net_avg'])} | {fmt(rc['net_tot'], 1)} |")
+        w()
+        # the interaction — the only statistic that says "the PAIR matters"
+        m = {k: [net_r(t) for t in v] for k, v in buckets.items()}
+        if all(len(v) >= 6 for v in m.values()):
+            mu = {k: sum(v) / len(v) for k, v in m.items()}
+            var = {k: (st.pvariance(v) / len(v) if len(v) > 1 else 0.0)
+                   for k, v in m.items()}
+            inter = (mu[(True, False)] - mu[(True, True)]) - \
+                    (mu[(False, False)] - mu[(False, True)])
+            se = math.sqrt(sum(var.values()))
+            ti = inter / se if se > 0 else float("nan")
+            FAM.cell()
+            FAM.z(ti, f"{ds.short} 2x2 交互 t")
+            w(f"- **交互项**（「低极端时执行是否极端所造成的差」减去"
+              f"「低不极端时的同一差」）= {inter:+.3f} 均净R，t = **{ti:+.2f}**。"
+              f"交互项 ≈ 0 就意味着**配对没有增量信息**，"
+              f"两个周期各自的阈值加起来已经说完了。")
+            # single-leg comparison, same sample
+            lo_hi = [x for k, v in m.items() if k[0] for x in v]
+            lo_lo = [x for k, v in m.items() if not k[0] for x in v]
+            ex_hi = [x for k, v in m.items() if k[1] for x in v]
+            ex_lo = [x for k, v in m.items() if not k[1] for x in v]
+            t_low = welch_t(lo_hi, lo_lo)
+            t_exec = welch_t(ex_hi, ex_lo)
+            FAM.cell(2)
+            FAM.z(t_low, f"{ds.short} 单腿低周期 t")
+            FAM.z(t_exec, f"{ds.short} 单腿执行周期 t")
+            w(f"- 单腿对照：只看低周期 t = {t_low:+.2f}（极端 {len(lo_hi)} 笔 "
+              f"{fmt(sum(lo_hi)/len(lo_hi))} vs 其余 {len(lo_lo)} 笔 "
+              f"{fmt(sum(lo_lo)/len(lo_lo))}）；"
+              f"只看执行周期 t = {t_exec:+.2f}（极端 {len(ex_hi)} 笔 "
+              f"{fmt(sum(ex_hi)/len(ex_hi))} vs 其余 {len(ex_lo)} 笔 "
+              f"{fmt(sum(ex_lo)/len(ex_lo))}）。")
+        else:
+            small = ", ".join(f"{names[k[0]]}/{names[k[1]]}={len(v)}"
+                              for k, v in m.items() if len(v) < 6)
+            w(f"- 交互项**无法计算**：有格子笔数 < 6（{small}）。")
+        w()
+
+    w("#### S3.4.1 字面阈值 ±61.8（派发区）与 ±100（极端区）")
+    w()
+    for ds in sets:
+        if ds.low_tf == ds.exec_tf:
+            w(f"*{ds.short}：低周期与执行周期是同一个周期（730 天样本没有更低周期"
+              f"的数据），2×2 退化，跳过。*")
+            w()
+            continue
+        _two_by_two(ds, DISTRIB, DISTRIB, "字面 +61.8")
+        _two_by_two(ds, EXTREME, EXTREME, "字面 +100（Saty 原话的 extreme）")
+    w("**字面阈值下四格塌成两格**：`(有空间, 有空间)` 吃掉几乎全部样本，"
+      "关键格 ⭐ 的 n 是个位数或 0。这与 S1 完全一致——"
+      "v14 的入场几何把 Phase 钉在中间，两个周期都钉。")
+    w()
+
+    w("#### S3.4.2 分位替代（把「极端」定义成各自分布的最靠前 20%）")
+    w()
+    w("⚠️ 门槛用全样本分位数（含前视），且**这不是 Saty 的 extreme**——"
+      "B 数据集执行周期的 80 分位只有 signed ≈ +26，那是「推进」。"
+      "这一节回答的是可判定的替代问题：**在 v14 自己的入场分布里，"
+      "「低周期靠前 + 执行周期不靠前」是不是真的比别的格好。**")
+    w()
+    for ds in sets:
+        if ds.low_tf == ds.exec_tf:
+            continue
+        rd = [r for r in readings[ds.short]
+              if r.p_low is not None and r.p_exec is not None]
+        if len(rd) < 60:
+            w(f"*{ds.short}：n={len(rd)}，分位 2×2 每格不足，跳过。*")
+            w()
+            continue
+        tl = qtile(sorted(r.p_low for r in rd), 0.80)
+        te = qtile(sorted(r.p_exec for r in rd), 0.80)
+        _two_by_two(ds, tl, te, "分位 80%")
+        tl3 = qtile(sorted(r.p_low for r in rd), 2 / 3)
+        te3 = qtile(sorted(r.p_exec for r in rd), 2 / 3)
+        _two_by_two(ds, tl3, te3, "分位 66.7%（放宽以换 n）")
+
     # ═══════════════════════ S4 the veto as a gate ══════════════════════════
     w("---")
     w()
@@ -833,6 +1205,131 @@ def main() -> None:
                   f"[{bs['p05']:+.1f}, {bs['p95']:+.1f}] | {verdict} |")
             w()
 
+    # ══════════ S4.3 the mandated threshold scan (brief item 2) ═════════════
+    w("---")
+    w()
+    w("## S4.3 阈值扫描 ±38.2 / ±50 / ±61.8 / ±78.6 / ±100（任务点 2）")
+    w()
+    w("扫描对象：**post-hoc 子集**口径——从基线账本里删掉被否决的笔，"
+      "留下的每一笔 R 与基线**逐笔相同**，所以：")
+    w()
+    w("- `Δ均净R` 是纯粹的**选择效应**，不掺任何再入场的运气；")
+    w("- `t` 是 **Welch 两样本 t（保留组均净R vs 被否决组均净R）**——"
+      "这是「单笔质量是否真的提升」的直接检验，"
+      "**不是**「砍掉笔数后总R转正」那种把亏损笔删掉就必然为真的伪判据；")
+    w("- `z_sel` 是有限总体修正下「保留子集均净R vs 从基线随机抽同样多笔」的 z。")
+    w()
+    w("两侧都扫：`+θ` 是 v15 实现的**顺向否决（别追）**，"
+      "`−θ` 是**逆向否决（别抄底/别摸顶）**的对照。"
+      "两者绝不能合并成 `|signed| ≥ θ`——那会把 Saty 明确赞成的情形"
+      "（「3m 极端但在需求位上」）和他明确反对的情形混在一起。")
+    w()
+
+    THETAS = (38.2, 50.0, 61.8, 78.6, 100.0)
+    scan_cells = 0
+    scan_zs: list[tuple[float, str]] = []
+
+    for ds in sets:
+        rd = [r for r in readings[ds.short] if r.p_exec is not None]
+        if not rd:
+            continue
+        base_net = [net_r(t) for t in ds.base]
+        mu_base = sum(base_net) / len(base_net)
+        w(f"### {ds.short}｜基线 {len(ds.base)} 笔，均净R {fmt(mu_base)}，"
+          f"总净R {fmt(sum(base_net), 1)}")
+        w()
+        w("| 否决规则 | 被否决 | 保留 n | 保留率 | 均净R | Δ均净R | "
+          "Welch t（保留 vs 被否决） | z_sel | 总净R | Δ总净R | 被否决组均净R |")
+        w("|---|---|---|---|---|---|---|---|---|---|---|")
+        for sign, sgl in ((+1, "顺向否决 signed ≥ +"), (-1, "逆向否决 signed ≤ −")):
+            for th in THETAS:
+                if sign > 0:
+                    vetoed = [r.t for r in rd if r.p_exec >= th]
+                    kept = [r.t for r in rd if r.p_exec < th]
+                else:
+                    vetoed = [r.t for r in rd if r.p_exec <= -th]
+                    kept = [r.t for r in rd if r.p_exec > -th]
+                # trades with no phase reading are always kept (can't judge)
+                kept = kept + [r.t for r in readings[ds.short] if r.p_exec is None]
+                nk = [net_r(t) for t in kept]
+                nv = [net_r(t) for t in vetoed]
+                scan_cells += 1
+                FAM.cell()
+                lbl = f"{sgl}{th:.1f}"
+                if not vetoed:
+                    w(f"| {lbl} | **0** | {len(kept)} | 100.0% | {fmt(mu_base)} | "
+                      f"+0.000 | – | – | {fmt(sum(base_net), 1)} | +0.0 | – |")
+                    continue
+                mu_k = sum(nk) / len(nk)
+                tt = welch_t(nk, nv)
+                zsel = _fpc_z(nk, base_net)
+                if tt == tt:
+                    scan_zs.append((tt, f"{ds.short} {lbl} t"))
+                    FAM.z(tt, f"{ds.short} {lbl} t(净R)")
+                if zsel == zsel:
+                    FAM.z(zsel, f"{ds.short} {lbl} z_sel(净R)")
+                w(f"| {lbl} | {len(vetoed)} | {len(kept)} | "
+                  f"{100*len(kept)/len(ds.base):.1f}% | {fmt(mu_k)} | "
+                  f"{fmt(mu_k-mu_base)} | {fmt(tt, 2)} | {fmt(zsel, 2)} | "
+                  f"{fmt(sum(nk), 1)} | {fmt(sum(nk)-sum(base_net), 1)} | "
+                  f"{fmt(sum(nv)/len(nv))} |")
+        w()
+
+    # in-engine version, primary dataset only
+    w("### S4.3.2 in-engine 口径（主样本 B·ES10m）：被拒信号会释放仓位")
+    w()
+    w("post-hoc 子集回答「这些笔该不该做」，in-engine 回答「装上这个闸门之后"
+      "账户会变成什么样」——两者不同，因为一笔被拒会让后面本来被占用的 setup 补进来。")
+    w()
+    ds = prim
+    ph = ds.ph_exec
+    base_net = [net_r(t) for t in ds.base]
+    mu_base = sum(base_net) / len(base_net)
+    w("| 否决规则 | 剩余 n | 被否决 | 均净R | Δ均净R | 总净R | Δ总净R | z_sel(毛R) |")
+    w("|---|---|---|---|---|---|---|---|")
+    for sign, sgl in ((+1, "顺向 signed ≥ +"), (-1, "逆向 signed ≤ −")):
+        for th in THETAS:
+            def gate(c: Cand, th=th, sign=sign) -> bool:
+                v = signed(ph.on_bar(c.dt), c.direction)
+                if v is None:
+                    return True
+                return v < th if sign > 0 else v > -th
+            tr, dg = run_gated(ds.bars, ds.book, ds.subs, gate=gate)
+            nk = [net_r(t) for t in tr]
+            m = summarize(tr, ds.base, ds.n_bars, None)
+            FAM.cell()
+            FAM.z(m["z_sel"], f"{ds.short} in-engine {sgl}{th} z_sel")
+            mu_k = sum(nk) / len(nk) if nk else float("nan")
+            w(f"| {sgl}{th:.1f} | {len(tr)} | {dg['gated_out']} | {fmt(mu_k)} | "
+              f"{fmt(mu_k-mu_base)} | {fmt(sum(nk), 1)} | "
+              f"{fmt(sum(nk)-sum(base_net), 1)} | {fmt(m['z_sel'], 2)} |")
+    w()
+
+    # multiplicity, declared for the scan family alone
+    scan_bonf = _norm_q(1 - 0.025 / max(scan_cells, 1))
+    w("### S4.3.3 这次扫描自己的多重比较账")
+    w()
+    w(f"- 扫描本身检视了 **{scan_cells} 个阈值格**"
+      f"（{len(THETAS)} 个 θ × 2 个方向 × {len(sets)} 个数据集，post-hoc 口径），"
+      f"in-engine 另加 {2*len(THETAS)} 个。")
+    w(f"- 仅就扫描这一族做 Bonferroni：双侧 5% 的门槛是 "
+      f"**|t| > {scan_bonf:.2f}**，不是 1.96。")
+    w(f"- 纯噪声下 {scan_cells} 个独立 t 里最大 |t| 的期望约 "
+      f"**{math.sqrt(2*math.log(max(scan_cells,2))):.2f}**。")
+    if scan_zs:
+        top = sorted(scan_zs, key=lambda x: -abs(x[0]))[:5]
+        w("- 本族实际最大的几个 |t|："
+          + "；".join(f"{lbl} = {v:+.2f}" for v, lbl in top) + "。")
+        w(f"- 结论：最大 |t| = **{abs(top[0][0]):.2f}**，"
+          f"{'越过' if abs(top[0][0]) > scan_bonf else '**没有越过**'}族内 Bonferroni "
+          f"门槛 {scan_bonf:.2f}。"
+          + ("在本族规模下，常规 |t| > 1.96 **不构成证据**。"
+             if abs(top[0][0]) <= scan_bonf else ""))
+    w()
+    w("⚠️ 而且这个族**不是**全文的族。全文族规模见 S8——"
+      "S4.3 的 t 值必须放进那个更大的门槛里再看一次。")
+    w()
+
     # ═══════════════════════ S5 the free proxy ══════════════════════════════
     w("---")
     w()
@@ -868,6 +1365,23 @@ def main() -> None:
         w(f"| {ds.short} | {len(rd)} | {spearman(px, d6):+.3f} | "
           f"{spearman(px, d3s):+.3f} | {spearman(d6, d3s):+.3f} | "
           f"{st.stdev(px):.1f} | {st.stdev(d6):.1f} |")
+    w()
+    w("⚠️ **上一段的机制推理被这张表否掉了，如实记下**：预期是 ρ 显著为正"
+      "（Phase 是 D3 的平滑版），实际四个数据集的 ρ 全部**为负**（−0.11 ~ −0.32）。")
+    w()
+    w("原因在 v14 的入场几何，不在振荡器：v14 只在**回撤结束、收盘重新站上 EMA13** "
+      "时入场。回撤越深，入场前 6 根的顺向净位移 D3 就越负；"
+      "而回撤越浅，价格离 EMA21 越远、Phase 越高。"
+      "所以在**这个特定的入场集合上**，「Phase 高」等于「回撤浅」，"
+      "「D3 高」等于「刚刚一路顺跑」——两者被入场规则强行反向绑定。")
+    w()
+    w("**这条对结论很重要**：它意味着 Phase 与 D3 在 v14 的样本里"
+      "**不是同一个变量的两种写法**，任务 1 报告里 D3 的结论"
+      "（趋势 z = −0.16，无证据）**不能**直接搬来当作 Phase 的结论，"
+      "反之亦然。两个都要单独测——本文测的就是 Phase 这一半。"
+      "同时也说明：在全体 K 上 Phase 确实约等于「净位移的平滑版」，"
+      "但**条件在 v14 入场之后**这个等价关系反号，"
+      "任何「用 D3 代替 Phase」的省事做法在这里都是错的。")
     w()
     w("### S5.2 D3 自己的五分位赛跑表（与 S2.2 的 Phase 表逐格可比）")
     w()
@@ -1014,7 +1528,7 @@ def main() -> None:
                 mu = sum(vals) / len(vals)
                 sd = st.stdev(vals) if len(vals) > 1 else 0.0
                 tt = mu / (sd / math.sqrt(len(vals))) if sd > 0 else float("nan")
-                FAM.z(tt, f"{ds.short} {zname} fwd t")
+                FAM.z_dep(tt, f"{ds.short} {zname} fwd t")
                 cellsx.append(f"{mu:+.3f} | {tt:+.2f}")
             w(f"| {zname} | {n} | " + " | ".join(cellsx) + " |")
         w()
@@ -1035,16 +1549,29 @@ def main() -> None:
       f"{K} 个独立标准正态里最大的 |z| 期望约 **{FAM.expected_max():.2f}**；"
       f"Bonferroni 双侧 5% 门槛是 **|z| > {FAM.bonferroni():.2f}**。")
     zs = sorted(FAM.zs, key=lambda x: -abs(x[0]))
-    w(f"- 实际观察到的 |z| 最大的六个（共 {len(FAM.zs)} 个）：")
-    for zv, lbl in zs[:6]:
+    w(f"- 参与排名的统计量共 **{len(FAM.zs)} 个**（每笔交易只被计入一次的"
+      "赛跑 z / 选择 z / Welch t）。另有 **{n}** 个 S7 的前向收益 t **不参与排名**："
+      "它们建立在重叠窗口 × 重叠分区成员上，标准误被未知倍数低估，"
+      "让它们竞争「全族最大 z」等于用一个坏掉的尺子夺冠。"
+      "它们仍然各占一个格子（已计入上面的 {K}）。".format(n=len(FAM.dep), K=K))
+    w(f"- 实际观察到的 |z| 最大的八个：")
+    for zv, lbl in zs[:8]:
         w(f"  - {lbl} = {zv:+.2f}")
     if zs:
-        w(f"- 最大 |z| = **{abs(zs[0][0]):.2f}**，"
+        w(f"- **最大 |z| = {abs(zs[0][0]):.2f}**，"
           f"{'越过' if abs(zs[0][0]) > FAM.bonferroni() else '**没有越过**'}"
           f" Bonferroni 门槛 {FAM.bonferroni():.2f}，"
           f"{'也' if abs(zs[0][0]) <= FAM.expected_max() else '但'}"
           f"{'没有' if abs(zs[0][0]) <= FAM.expected_max() else ''}"
           f"超过纯噪声下的期望最大值 {FAM.expected_max():.2f}。")
+        n196 = sum(1 for v, _ in FAM.zs if abs(v) > 1.96)
+        w(f"- 全族里 |z| > 1.96 的有 **{n196} 个**；"
+          f"若全部为噪声，期望约 {0.05*len(FAM.zs):.1f} 个。"
+          f"{'观测数并不高于噪声期望——没有任何需要解释的东西。' if n196 <= 0.05*len(FAM.zs)*1.5 else '略高于期望，但没有单个格子越过族门槛，方向也不一致。'}")
+    dep = sorted(FAM.dep, key=lambda x: -abs(x[0]))
+    if dep:
+        w(f"- （不参与排名的 S7 前向 t，最大三个仅供参考：" +
+          "；".join(f"{lbl} {v:+.2f}" for v, lbl in dep[:3]) + "）")
     w()
 
     txt = "\n".join(o)
