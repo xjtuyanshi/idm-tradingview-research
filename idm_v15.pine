@@ -39,8 +39,10 @@
 //     所以 v15 的位置闸门是一个【尚未验证的新假设】，不是已知有效的修复。
 //     它与之前测过的所有门槛有一处本质不同：那些门槛筛的是"要不要下注"，
 //     位置闸门筛的是"这一注下在什么位置"——前者改不到赔率结构，后者直接改
-//     风险距离与入场偏离度。这个区别是否真的产生期望值，正在检验：
-//     research/reports/V15_ENTRY_LOCATION.md。**在它出结果之前，不要推送。**
+//     风险距离与入场偏离度。
+//     ⚠ 后续更新：V15_ENTRY_LOCATION.md 已经给出答案，而且是【否定】的——
+//        「入场偏离度」这一半没有价值，有价值的只有「风险距离」那一半。
+//        见本文件顶部 2026-07-28 补记 C。
 //
 // 证据纪律：面板上每个数字都带标签。凡标【未验证】的，界面不得暗示它有效。
 // ═══════════════════════════════════════════════════════════════════════════
@@ -85,9 +87,16 @@ const string VERSION_ID = "15.1.0-regime-and-named-level"
 //     07-26 #notes 开篇是「10m divergence **at support**」。
 //     位是【位置】，EMA/背离只是【判据】。没有位 = 不下注。
 //
+//   C【位置闸门重新标定】V15_ENTRY_LOCATION.md 实际跑成了（我一度误以为它
+//     和其余 4 份一起死于 session limit）。它把 v15.0 的 ①②③ 三条闸门【否定】了：
+//     「离13近」「K小」「不追」全都比基线更差；唯一有效的是【止损放远】。
+//     → ①②③ 默认关闭，最小风险距离扶正为主闸门。详见该处注释。
+//     这条是本次改动里唯一有统计支撑的，A 和 B 都没有。
+//
 // ⚠ A 与 B 都是【新假设】，与本文件下方所有「已验证」标注不同等级。
 //   它们此刻的证据是：一天的逐条对账 + 与全部语料一致。这不叫统计验证。
-//   V15_* 研究（因 session limit 全部失败）必须补跑后才谈推送。
+//   另外 4 份 V15 研究（PHASE_VETO / LEVEL_RETEST / BIAS / ADVERSARIAL）
+//   确实死于 session limit，必须补跑。在此之前不推送。
 // ═══════════════════════════════════════════════════════════════════════
 
 // ── 01 ATR 位（对齐官方 Saty ATR Levels，已逐位验证）────────────────────
@@ -112,17 +121,39 @@ string setupTF = input.timeframe("10", "Setup 计算周期", group=G_RIB,
 // ── 04 位置闸门（v15 的核心，防追高追空）─────────────────────────────────
 string G_LOC = "04 · 位置闸门（防追高追空）"
 bool useLocGate = input.bool(true, "启用位置闸门", group=G_LOC,
-     tooltip="v15 与 v14 唯一的机制性区别。四条子闸门任一不通过则不入场。" +
-         "【研究中】各子闸门的实际效力见 research/reports/V15_ENTRY_LOCATION.md。")
+     tooltip="⚠ 2026-07-28 已按 V15_ENTRY_LOCATION.md 重新标定：" +
+         "①②③ 被实测【否定】，默认关闭；只有 ④⑤ 与最小风险距离默认生效。")
+
+// ⚠⚠ ①②③ 的标定结果（research/reports/V15_ENTRY_LOCATION.md，
+//     ES=F 10m，517 个信号，路径判定落到 5m 子 K，基线均净R = −0.142）：
+//
+//     D1≤中位（离13近）      均净R −0.250  Δ−0.108  t=−4.82   ← 反而更差
+//     D3≤中位（不追）        均净R −0.212  Δ−0.070  t=−3.97   ← 反而更差
+//     D1>中位且D3>中位(又远又追) 均净R −0.052  Δ+0.091  z_sel=+1.92 ← 反而更好
+//     D2r 最小档（K最小）     命中 37.5% vs 几何零假设 46.5%, z=−2.06 ← 反而更差
+//     D4≥中位（止损远）      均净R +0.005  Δ+0.147  z_sel=+4.37  ← 唯一有效
+//
+//     全文 257 个格子，Bonferroni 门槛 |z|>3.73。**只有最后一行越过。**
+//     机制：D4 与「逆行/风险」秩相关 ρ=−0.505 (z=−11.47)，全报告最强关系。
+//
+//     怎么理解「追反而更好」：追确实带来更深的【绝对】逆行
+//     （D2r 前3根 |MAE| ρ=+0.317, z=+7.20，用户的直觉在这一半是对的），
+//     但追的时候结构止损【也更远】，按 R 计反而更安全。
+//     真正杀人的不是追，是【止损太近】。
+//     所以 v15.1 把 ①②③ 默认关掉，把最小风险距离扶正为主闸门。
+//     ⚠ 保留开关是为了可复验，不是留后路——打开它们等于逆着实测走。
+bool useD1 = input.bool(false, "① 限制离 EMA13 距离【实测否定，默认关】",
+     group=G_LOC, tooltip="打开会让均净R 从 −0.142 恶化到 −0.250（t=−4.82）。")
 float maxDistATR = input.float(0.10, "① 入场价离 EMA13 最远（ATR）", step=0.01,
-     minval=0.01, group=G_LOC,
-     tooltip="离参考线越远 = 追得越凶。这是四条里最直接的一条。")
+     minval=0.01, group=G_LOC)
+bool useD2 = input.bool(false, "② 限制信号 K 振幅【实测否定，默认关】",
+     group=G_LOC, tooltip="最小 K 那一档是全样本最差之一：命中 37.5% vs 零假设 46.5%。")
 float maxBarATR = input.float(0.20, "② 信号 K 最大振幅（ATR）", step=0.01,
-     minval=0.02, group=G_LOC,
-     tooltip="信号 K 越大，收盘入场就越是在这根 K 的极端位置。")
+     minval=0.02, group=G_LOC)
+bool useD3 = input.bool(false, "③ 限制近端冲量【实测否定，默认关】",
+     group=G_LOC, tooltip="「不追」那一半均净R −0.212，比基线更差（t=−3.97）。")
 float maxThrustATR = input.float(0.35, "③ 入场前 3 根顺向净位移上限（ATR）",
-     step=0.01, minval=0.05, group=G_LOC,
-     tooltip="近端冲量。刚刚急拉/急跌完再顺着做 = 追。")
+     step=0.01, minval=0.05, group=G_LOC)
 bool usePhaseVeto = input.bool(true, "④ Phase 顺向极端时否决", group=G_LOC,
      tooltip="Saty 原话「3m extreme here, 10m has room」。顺方向已极端时不追。")
 float phaseExtreme = input.float(61.8, "Phase 极端阈值", step=0.1, group=G_LOC)
@@ -161,10 +192,17 @@ int holdTouches = input.int(2, "S2 需要的最少触及次数", minval=1, maxva
      group=G_SET, tooltip="用户原话「反反复复下不去」。2 或 3 都合理；" +
          "【未验证】哪个更好——研究中，见 V15_LEVEL_RETEST_AND_DIVERGENCE.md。")
 int divLookback = input.int(20, "S3 背离回看根数", minval=5, group=G_SET)
-float minRiskATR = input.float(0.12, "最小风险距离（ATR）", step=0.01, group=G_SET,
-     tooltip="【实测定的，不是拍脑袋】v14 诊断：Recovery 的保护位中位仅 0.065 ATR，" +
-         "33% 的交易死在保护位；Vomy 的 fin 保护位 0.151 ATR，只有 5% 被扫。" +
-         "而且 0.6 点点差占 6.25 点风险的 9.6%——止损太近同时被噪音和点差两头吃。")
+float minRiskATR = input.float(0.12, "最小风险距离（ATR）★主闸门", step=0.01,
+     group=G_SET,
+     tooltip="★ 这是整套系统里【唯一】通过多重比较校正的闸门，不要关掉它。" +
+         "V15_ENTRY_LOCATION：D4≥中位(0.110 ATR) 均净R +0.005 vs 基线 −0.142，" +
+         "Δ+0.147，z_sel=+4.37（Bonferroni 门槛 3.73，全文 257 格仅此一格越过）。" +
+         "D4 最小档：命中 24.0% vs 几何零假设 35.8%（z=−2.74），均净R −0.551。" +
+         "机制：D4 与「逆行/风险」秩相关 ρ=−0.505 (z=−11.47)。" +
+         "v14 佐证：Recovery 保护位中位仅 0.065 ATR、33% 死在保护位；" +
+         "Vomy 的 fin 保护位 0.151 ATR、只有 5% 被扫。" +
+         "0.6 点点差占 6.25 点风险的 9.6%——止损太近被噪音与点差两头吃。" +
+         "⚠ 但请注意：改善之后也只是【打平】（总净R +1.3），不是盈利。")
 float stopBufATR = input.float(0.03, "保护位缓冲（ATR）", step=0.01, group=G_SET,
      tooltip="把保护位从结构极值再外推一点，避开贴脸止损。同上，实测驱动。")
 
@@ -333,9 +371,9 @@ f_loc_ok(int dir) =>
          math.max(atrVal, syminfo.mintick)
     [nlv, nld, nnm] = f_nearest_named(sc)
     float lvlD = na(nld) ? na : nld / math.max(atrVal, syminfo.mintick)
-    bool g1 = dist <= maxDistATR
-    bool g2 = barSz <= maxBarATR
-    bool g3 = na(thrust) or thrust <= maxThrustATR
+    bool g1 = not useD1 or dist <= maxDistATR
+    bool g2 = not useD2 or barSz <= maxBarATR
+    bool g3 = not useD3 or na(thrust) or thrust <= maxThrustATR
     bool g4 = not usePhaseVeto or na(phase) or
          (dir > 0 ? phase < phaseExtreme : phase > -phaseExtreme)
     bool g5 = not useLvlGate or (not na(lvlD) and lvlD <= maxLvlDistATR)
