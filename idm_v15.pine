@@ -49,7 +49,7 @@
 indicator("IDM v15", "IDM v15", overlay=true,
      max_lines_count=200, max_labels_count=300)
 
-const string VERSION_ID = "15.3.0-vix1d-implied"
+const string VERSION_ID = "15.5.0-verdict-applied"
 
 // ═══ 2026-07-28 补记：与 Saty 当日实盘的逐条对账（这是 v15.1 的全部理由）═══
 //
@@ -93,10 +93,38 @@ const string VERSION_ID = "15.3.0-vix1d-implied"
 //     → ①②③ 默认关闭，最小风险距离扶正为主闸门。详见该处注释。
 //     这条是本次改动里唯一有统计支撑的，A 和 B 都没有。
 //
-// ⚠ A 与 B 都是【新假设】，与本文件下方所有「已验证」标注不同等级。
-//   它们此刻的证据是：一天的逐条对账 + 与全部语料一致。这不叫统计验证。
-//   另外 4 份 V15 研究（PHASE_VETO / LEVEL_RETEST / BIAS / ADVERSARIAL）
-//   确实死于 session limit，必须补跑。在此之前不推送。
+// ═══ 2026-07-28 晚 · 全轮检验完毕后的状态声明（请先读这一段）═══════════
+//
+// 本轮九份研究 + 四个视角的对抗复核已完成（research/reports/V15_*.md，
+// 综合裁决见 V15_VERDICT.md）。结论对本文件此前的说法很不利：
+//
+//   ★ 本项目至今【零个】关于收益的发现能通过正确的门槛。
+//     合并 family 约 1839 格（接上历史 2826 格），门槛 |z| > 4.2；
+//     纯噪声下最大 |z| 的期望本身就有 3.44–3.75。越过它的：0 个。
+//
+//   ★ 上一版认为唯一幸存的那条（D4「止损放远」，z_sel=+4.37）是【记账幻觉】。
+//     净R 的分母【就是】止损距离，按止损分层看 R = 用 x 预测 y/x。
+//     换成「每笔投同样多钱」：ρ 的 z 从 +8.89 → +1.22，闸门 t 从 +4.46 → +2.12，
+//     且五分位不单调。三个独立视角同时推翻。已撤回。
+//
+//   ★ 极简版 vs 全套 vs 纯随机（同一数据、同一判定、同一点差）：
+//     五个选手全部负期望，且【两两之间没有一对分得开】（最大 |z|=1.26）。
+//     第一名与最后一名相差 0.52 点/笔，比点差本身 0.6 点还小。
+//     扣点差【之前】五个选手的毛钱全部贴零 —— 负期望几乎全部是点差。
+//     用户原话「这个东西其实很符合直觉的，为什么搞得这么多」——**他是对的**，
+//     复杂度什么也没买到；但砍成四条规则也不赚钱，亏的是入场本身。
+//     （同时撤回上一版的重话「v14 比扔硬币还差」——那也是记账幻觉，
+//       换成钱之后 v14 落在随机分布第 12.9 百分位，带内。真相是：分不开。）
+//
+//   ★ 因此本版把【五个已被推翻的默认闸门全部关掉】：
+//     ④Phase否决（462笔触发 1 次，是不存在的过滤器）
+//     ⑤具名位闸门（放过 91–97% 的信号，平移梯同量级，κ≈0 不可移植）
+//     区间态禁交叉 / 区间态只 fade（P1、P2 均不成立，交互 z=+0.21）
+//     S2 拒绝 / S3 背离（降级为观察；线上 S3 占 67% 交易量且是唯一负贡献）
+//
+// 唯一新增的、【尚未被任何研究覆盖】的东西是 S4 顺势回踩 —— 见 05 组。
+// 它是用户 2026-07-28 亲手指出的漏项，也是本系统此前整整缺失的一【类】机会。
+// 它没有被证明有效，但它也从未被检验过，与上面那些「已被推翻」的不是一回事。
 // ═══════════════════════════════════════════════════════════════════════
 
 // ── 01 ATR 位（对齐官方 Saty ATR Levels，已逐位验证）────────────────────
@@ -121,8 +149,9 @@ string setupTF = input.timeframe("10", "Setup 计算周期", group=G_RIB,
 // ── 04 位置闸门（v15 的核心，防追高追空）─────────────────────────────────
 string G_LOC = "04 · 位置闸门（防追高追空）"
 bool useLocGate = input.bool(true, "启用位置闸门", group=G_LOC,
-     tooltip="⚠ 2026-07-28 已按 V15_ENTRY_LOCATION.md 重新标定：" +
-         "①②③ 被实测【否定】，默认关闭；只有 ④⑤ 与最小风险距离默认生效。")
+     tooltip="⚠⚠ 2026-07-28 全部检验完毕：**①②③④⑤ 五条全部不成立，已全部默认关闭。**" +
+         "本闸门现在等于一个空壳，保留它只为可复验。" +
+         "真正还在生效的只有 05 组的最小风险距离，而那是【成本侧】不是 alpha。")
 
 // ⚠⚠ ①②③ 的标定结果（research/reports/V15_ENTRY_LOCATION.md，
 //     ES=F 10m，517 个信号，路径判定落到 5m 子 K，基线均净R = −0.142）：
@@ -154,18 +183,28 @@ bool useD3 = input.bool(false, "③ 限制近端冲量【实测否定，默认�
      group=G_LOC, tooltip="「不追」那一半均净R −0.212，比基线更差（t=−3.97）。")
 float maxThrustATR = input.float(0.35, "③ 入场前 3 根顺向净位移上限（ATR）",
      step=0.01, minval=0.05, group=G_LOC)
-bool usePhaseVeto = input.bool(true, "④ Phase 顺向极端时否决", group=G_LOC,
-     tooltip="Saty 原话「3m extreme here, 10m has room」。顺方向已极端时不追。")
+bool usePhaseVeto = input.bool(false, "④ Phase 顺向极端时否决【实测=零操作，默认关】", group=G_LOC,
+     tooltip="【V15_PHASE_VETO】462 笔里只触发 1 次，Δ总净R = −0.2。它不是一个坏过滤器，是一个【不存在的】过滤器。留着的唯一代价是让人误以为「追高问题已经处理了」。")
 float phaseExtreme = input.float(61.8, "Phase 极端阈值", step=0.1, group=G_LOC)
-bool useLvlGate = input.bool(true, "⑤ 入场必须贴着一个具名位", group=G_LOC,
+bool useLvlGate = input.bool(false, "⑤ 入场必须贴着一个具名位【实测不成立，默认关】", group=G_LOC,
      tooltip="【2026-07-28 Saty 实盘对照后新增，也是本闸门里最硬的一条】" +
          "他每一篇 #ideas 都是「IF 守住/破 <具名位> THEN 目标 <具名位>」；" +
          "07-27 的赢单是「D21 盘前阻力不破 → 破区间 → Vomy → 10m200 + 夜盘缺口」；" +
          "07-28 全天只有两个动作，都发生在 trigger box 的两条边上" +
          "（09:48「top of range to bottom of range」、11:27「At 7440」= call trigger 7438.82）。" +
-         "结论：位是【位置】，EMA/背离只是【判据】。没有位 = 不下注。")
+         "⚠⚠ 2026-07-28 检验结果：【不成立】。放过 91–97% 的信号（阶梯半间距 " +
+         "0.073–0.084 ATR 本来就小于 0.10 阈值）；三组趋势 z 符号不一致 " +
+         "(−0.99/+1.26/−0.18)；平移梯给同量级效应。且 κ≈0——ES=F 与 SPX500 " +
+         "上「离最近位多远」几乎不相关，线上选中的会是完全不同的一批交易。" +
+         "「没有位 = 不下注」这句话【已撤回】。")
 float maxLvlDistATR = input.float(0.10, "⑤ 离最近具名位最远（ATR）", step=0.01,
      minval=0.01, group=G_LOC)
+bool lvlIncludeEMA = input.bool(true, "⑤ 具名位含 ribbon 均线（13/21/34/48）",
+     group=G_LOC,
+     tooltip="⚠ 这一条是 2026-07-28 补的，补的是一个结构性缺陷：" +
+         "之前闸门只认固定 ATR 位，导致「趋势中回踩绿带再走」这种最常见的" +
+         "好入场被系统先天排除。纳入均线不是放松标准——Saty 的词表里" +
+         "H21(RTH)/D21/W21/H200/10m200 全是均线，他本来就把均线当位用。")
 bool lvlIncludeSess = input.bool(true, "⑤ 具名位含夜盘/盘前/前日高低", group=G_LOC,
      tooltip="语料统计里他用得最多的三组非 ATR 位。今天 09:32 那句" +
          "「about to test PM support」用的就是盘前低点。")
@@ -178,31 +217,49 @@ bool useRegime = input.bool(true, "启用状态层", group=G_REG,
          "符号是反的，不是幅度不对。这解释了为什么收紧任何门槛都只减少笔数。" +
          "Saty 07-28 盘前先定性「in the trigger box + compression → smaller range，" +
          "sit on hands / be more picky」，再只在两条边上动手。")
-bool rangeNoFlip = input.bool(true, "区间态禁用 S1 翻转", group=G_REG,
+bool rangeNoFlip = input.bool(false, "区间态禁用 S1 翻转【实测不成立，默认关】", group=G_REG,
      tooltip="交叉类信号在区间内是负期望的主要来源。区间态只留 S2 拒绝 + S3 背离。")
-bool rangeFadeOnly = input.bool(true, "区间态只做「离开边缘」方向", group=G_REG,
+bool rangeFadeOnly = input.bool(false, "区间态只做「离开边缘」方向【实测不成立，默认关】", group=G_REG,
      tooltip="在盒子下沿只能做多、上沿只能做空。这就是他今天的两个动作。")
 
 // ── 05 Setup ──────────────────────────────────────────────────────────────
 string G_SET = "05 · Setup"
 bool enFlip = input.bool(true, "S1 趋势翻转（袋子变色 + 站到外侧）", group=G_SET)
-bool enHold = input.bool(true, "S2 位被拒绝（同位反复不破后收复）", group=G_SET)
-bool enDiv = input.bool(true, "S3 背离（Phase 与价格背离）", group=G_SET)
+bool enHold = input.bool(false, "S2 位被拒绝【降级为观察，默认关】", group=G_SET,
+     tooltip="【V15_LEVEL_RETEST】触及次数不带信息（k≥2 的 z_sel=−1.67）。值得看的是【穿透深度递减】，不是次数。且线上只触发了 12 次，实现本身也很脆。")
+bool enDiv = input.bool(false, "S3 背离【降级为观察，默认关】", group=G_SET,
+     tooltip="线上账本：S3 占了 67% 的交易量，且是唯一的负贡献（176笔 50% −0.9R）。研究结论同向：S2/S3 都不该以【新增入场条件】的身份进入系统。")
+bool enPull = input.bool(true, "S4 顺势回踩（趋势中踩住云再走）★新增", group=G_SET,
+     tooltip="⚠ 这是 2026-07-28 补的第四类 setup，补的是一个方法论缺口：" +
+         "S1/S2/S3 全都是【有东西要转向了】的信号（翻转、拒绝、背离），" +
+         "而这一类是【延续】——趋势没变，价格回踩到云、踩住、继续走。" +
+         "这是 Ripster 方法的主干，也是用户当日亲手指出来的漏项：" +
+         "「它又踩到了那个绿色带子上，然后又上去了」。" +
+         "此前系统里完全没有这一类，且⑤号闸门还会把它否掉。**未验证。**")
+int pullLook = input.int(4, "S4 回踩回看根数", minval=2, maxval=12, group=G_SET,
+     tooltip="最近 N 根 setup K 内触及过 EMA21，即算一次回踩。")
 int holdTouches = input.int(2, "S2 需要的最少触及次数", minval=1, maxval=5,
      group=G_SET, tooltip="用户原话「反反复复下不去」。2 或 3 都合理；" +
          "【未验证】哪个更好——研究中，见 V15_LEVEL_RETEST_AND_DIVERGENCE.md。")
 int divLookback = input.int(20, "S3 背离回看根数", minval=5, group=G_SET)
-float minRiskATR = input.float(0.12, "最小风险距离（ATR）★主闸门", step=0.01,
+float minRiskATR = input.float(0.12, "最小风险距离（ATR）· 成本侧，非 alpha",
+     step=0.01, group=G_SET,
+     tooltip="⚠ 2026-07-28 更正：此前这里写着「唯一通过多重比较校正的闸门」" +
+         "「ρ=−0.505 是全报告最强关系」——**两句话都已撤回**。" +
+         "理由：净R 的分母【就是】止损距离，按止损分层再看 R = 用 x 预测 y/x。" +
+         "换成「每笔投同样多钱」的口径：ρ 的 z 从 +8.89 掉到 +1.22，" +
+         "闸门 t 从 +4.46 掉到 +2.12，且五分位【不单调】" +
+         "(Q1 −21.35 / Q2 −13.53 / Q3 +5.06 / Q4 −4.92 / Q5 +8.87)。" +
+         "那个 ρ=−0.505 经置换检验落在算术零分布的第 99 百分位——" +
+         "比纯算术预测的还弱，不含任何信息。" +
+         "参数保留，因为它真实在做的事是【压住点差占比】" +
+         "（0.6 点占 6.25 点风险的 9.6%）——这是成本侧改动，不是位置改进。")
+float minTgtPts = input.float(2.4, "T1 最小距离（点）", step=0.1, minval=0.0,
      group=G_SET,
-     tooltip="★ 这是整套系统里【唯一】通过多重比较校正的闸门，不要关掉它。" +
-         "V15_ENTRY_LOCATION：D4≥中位(0.110 ATR) 均净R +0.005 vs 基线 −0.142，" +
-         "Δ+0.147，z_sel=+4.37（Bonferroni 门槛 3.73，全文 257 格仅此一格越过）。" +
-         "D4 最小档：命中 24.0% vs 几何零假设 35.8%（z=−2.74），均净R −0.551。" +
-         "机制：D4 与「逆行/风险」秩相关 ρ=−0.505 (z=−11.47)。" +
-         "v14 佐证：Recovery 保护位中位仅 0.065 ATR、33% 死在保护位；" +
-         "Vomy 的 fin 保护位 0.151 ATR、只有 5% 被扫。" +
-         "0.6 点点差占 6.25 点风险的 9.6%——止损太近被噪音与点差两头吃。" +
-         "⚠ 但请注意：改善之后也只是【打平】（总净R +1.3），不是盈利。")
+     tooltip="【修缺陷，非改进】V15_SCALE_MISMATCH：517 笔里有 16 笔（3.1%）的 T1 " +
+         "距离 ≤ 一个点差、34 笔 ≤ 两个点差——这些交易在【毛口径上就赢不了钱】。" +
+         "根因：f_next_rung 只要求高一个 minTick。默认 2.4 = 4×0.6 点点差。" +
+         "⚠ 实测收益 t=+1.03 不显著；这是修一个明显的缺陷，不是已证明的改进。")
 float stopBufATR = input.float(0.03, "保护位缓冲（ATR）", step=0.01, group=G_SET,
      tooltip="把保护位从结构极值再外推一点，避开贴脸止损。同上，实测驱动。")
 
@@ -218,6 +275,12 @@ string exitLine = input.string(EXIT_34, "结构离场用哪条线", group=G_EXIT
 int minHoldBars = input.int(3, "最小持仓（setup K 根数）", minval=0, group=G_EXIT,
      tooltip="入场后 N 根内不因结构条件离场，只认保护位。防止一进就被震出。")
 int cooldownBars = input.int(6, "同向冷却（setup K 根数）", minval=0, group=G_EXIT)
+int maxPerDay = input.int(4, "一天最多几笔（0=不限）", minval=0, group=G_EXIT,
+     tooltip="【V15_SIMPLE_VS_ELABORATE】复杂度唯一可指认的产出就是【压交易次数】" +
+         "（v14 每 13.3 根 K 一笔 vs 极简版每 3.9 根）。而这一行就能做到，" +
+         "不需要二十个参数。注意反直觉的一点：规则少 ≠ 动手少——" +
+         "四条规则的极简版吐出 1749 个信号，比 v14 的 517 个 churn 3.4 倍。" +
+         "在没有优势的系统里，唯一确定的产出是点差。")
 
 // ── 06b theta 时钟（2026-07-28 用 UW 真实 0DTE 链标定，这是全新的一层）──────
 //
@@ -375,27 +438,7 @@ float impliedNow = impliedMovePts > 0 ? impliedMovePts : emNow
 string impliedSrc = impliedMovePts > 0 ? "手填" :
      na(emNow) ? "无" : "VIX1D " + str.tostring(vix1d, "#.##") + "【n=1校准】"
 
-// ── 具名位全集（ATR 梯 + 时段位）─────────────────────────────────────────
-// 「具名位」= 他会在帖子里点名的那种位。ATR 梯是一组，夜盘/盘前/前日高低是另一组
-// （语料统计里这三组出现频率最高，见 SATY_PLAYBOOK_CORPUS.md 第三节）。
-f_nearest_named(float px) =>
-    [rl, rd] = f_nearest_rung(px)
-    float best = rl
-    float bd = rd
-    string nm = "ATR位"
-    if lvlIncludeSess
-        array<float> ls = array.from(onHi, onLo, pmHi, pmLo, pdh, pdl)
-        array<string> ns = array.from("夜盘高", "夜盘低", "盘前高", "盘前低",
-             "PDH", "PDL")
-        for i = 0 to array.size(ls) - 1
-            float lv = array.get(ls, i)
-            if not na(lv)
-                float d = math.abs(px - lv)
-                if na(bd) or d < bd
-                    bd := d
-                    best := lv
-                    nm := array.get(ns, i)
-    [best, bd, nm]
+// （具名位全集下移到 ribbon 定义之后 —— 需要引用 EMA，Pine 先定义后用）
 
 // ── Setup 周期的 ribbon + Phase（非重绘：[1] + lookahead_on）────────────
 f_phase(float src, float a) => a > 0 ? (src - ta.ema(src, 21)) / (3.0 * a) * 100 : na
@@ -423,6 +466,49 @@ bool newBar = useHTF ? ta.change(hT) != 0 : barstate.isconfirmed
 bool stackBull = e8 > e13 and e13 > e21 and e21 > e34 and e34 > e48
 bool stackBear = e8 < e13 and e13 < e21 and e21 < e34 and e34 < e48
 float exitRef = exitLine == EXIT_21 ? e21 : exitLine == EXIT_48 ? e48 : e34
+
+// ── 具名位全集（ATR 梯 + 时段位 + ribbon 均线）───────────────────────────
+// 「具名位」= 他会在帖子里点名的那种位。三组：
+//   ① ATR 梯   ② 夜盘/盘前/前日高低   ③ **ribbon 均线**
+//
+// ⚠ 2026-07-28 修正（用户指出的结构性缺陷）：
+//   v15.3 之前，⑤号闸门只认【固定的 ATR 位】。于是「趋势中回踩绿带、踩住、
+//   继续走」这种最常见的好入场，因为贴的是一条【会动的均线】而不是固定位，
+//   会被闸门直接否决。也就是说系统先天排除了最普通的机会。
+//
+//   把均线纳入"位"不是放松标准，而是【更忠于原作者】：他的词表里到处是
+//   H21 (RTH) / D21 / W21 / H200 / 10m 200 —— 他点名的位有一半就是均线。
+//   见 SATY_PLAYBOOK_CORPUS.md 第三节与 5.3 节的词表缺口清单。
+f_nearest_named(float px) =>
+    [rl, rd] = f_nearest_rung(px)
+    float best = rl
+    float bd = rd
+    string nm = "ATR位"
+    if lvlIncludeSess
+        array<float> ls = array.from(onHi, onLo, pmHi, pmLo, pdh, pdl)
+        array<string> ns = array.from("夜盘高", "夜盘低", "盘前高", "盘前低",
+             "PDH", "PDL")
+        for i = 0 to array.size(ls) - 1
+            float lv = array.get(ls, i)
+            if not na(lv)
+                float d = math.abs(px - lv)
+                if na(bd) or d < bd
+                    bd := d
+                    best := lv
+                    nm := array.get(ns, i)
+    if lvlIncludeEMA
+        array<float> ms = array.from(e13, e21, e34, e48)
+        array<string> mn = array.from("EMA13", "EMA21", "EMA34", "EMA48")
+        for i = 0 to array.size(ms) - 1
+            float lv = array.get(ms, i)
+            if not na(lv)
+                float d = math.abs(px - lv)
+                if na(bd) or d < bd
+                    bd := d
+                    best := lv
+                    nm := array.get(mn, i)
+    [best, bd, nm]
+
 
 // ── 状态层：区间 vs 趋势 ─────────────────────────────────────────────────
 // 区间 = ①价格还在 trigger box 内（|ratio| <= 0.236，他嘴里的 "in the trigger box"）
@@ -519,18 +605,24 @@ var float pR = 0.0
 var int pBars = 0
 var int pEntryT = na
 var int cdBars = 0
+var int dayN = 0
+var int lastDayK = na
 
-// 账本：0 全部 1 RTH 2 夜盘 3 顺偏向 4 逆偏向 5 S1 6 S2 7 S3
-var array<int> agN = array.new<int>(8, 0)
-var array<int> agW = array.new<int>(8, 0)
-var array<float> agR = array.new<float>(8, 0.0)
+// 账本：0 全部 1 RTH 2 夜盘 3 顺偏向 4 逆偏向 5 S1翻转 6 S2拒绝 7 S3背离 8 S4回踩
+var array<int> agN = array.new<int>(9, 0)
+var array<int> agW = array.new<int>(9, 0)
+var array<float> agR = array.new<float>(9, 0.0)
+// 「净钱」= R × 风险距离/日ATR。本轮三份报告因只看 R 而翻车、两条核心结论撤回：
+// R 的分母【就是】止损距离，按止损分层看 R 必然骗人。
+var array<float> agM = array.new<float>(9, 0.0)
 f_led(bool rth, int bias, int dir, string su, float r) =>
-    int si = su == "翻转" ? 5 : su == "拒绝" ? 6 : 7
+    int si = su == "翻转" ? 5 : su == "拒绝" ? 6 : su == "回踩" ? 8 : 7
     int[] ix = array.from(0, rth ? 1 : 2, bias == dir ? 3 : 4, si)
     for i = 0 to 3
         int k = array.get(ix, i)
         array.set(agN, k, array.get(agN, k) + 1)
         array.set(agR, k, array.get(agR, k) + r)
+        array.set(agM, k, array.get(agM, k) + r * pRisk / math.max(atrVal, syminfo.mintick))
         if r > 0
             array.set(agW, k, array.get(agW, k) + 1)
 
@@ -541,6 +633,12 @@ var int vetoCount = 0
 if newBar
     if cdBars > 0
         cdBars := cdBars - 1
+    int dk = year(time_close, "America/New_York") * 10000 +
+         month(time_close, "America/New_York") * 100 +
+         dayofmonth(time_close, "America/New_York")
+    if na(lastDayK) or dk != lastDayK
+        lastDayK := dk
+        dayN := 0
 
     // ---- 管理持仓 ----
     if pDir != 0
@@ -645,6 +743,22 @@ if newBar
                 cand := -1
                 candName := "拒绝"
                 candProt := math.max(sh, watchLvl + 0.03 * atrVal)
+        // S4 顺势回踩：趋势在、回踩到云、踩住、收复 EMA8 → 顺势进
+        // （这一类是【延续】不是【反转】，是 S1/S2/S3 都覆盖不到的一整类机会）
+        if cand == 0 and enPull and stacked
+            bool reclaimUp = sc > e8 and sc[1] <= e8[1]
+            bool reclaimDn = sc < e8 and sc[1] >= e8[1]
+            float pbLo = ta.lowest(sl, pullLook)
+            float pbHi = ta.highest(sh, pullLook)
+            if stackBull and reclaimUp and pbLo <= e21 and pbLo > e48
+                cand := 1
+                candName := "回踩"
+                candProt := pbLo - stopBufATR * atrVal
+            else if stackBear and reclaimDn and pbHi >= e21 and pbHi < e48
+                cand := -1
+                candName := "回踩"
+                candProt := pbHi + stopBufATR * atrVal
+
         // S3 背离
         if cand == 0 and enDiv
             if divBull and sc > sl
@@ -659,7 +773,9 @@ if newBar
         // 在盒子下沿只能做多、上沿只能做空。这就是他 07-28 的两个动作：
         // 09:32 顶部转空 → 09:48「top of range to bottom of range」平；
         // 11:19 回到顶部 → 11:27「At 7440（=call trigger）… Scale longs」。
-        if cand != 0 and isRange and rangeFadeOnly and not na(pxRatio)
+        // ⚠ 回踩是【延续】型，强制它 fade 等于自相矛盾，故豁免
+        if cand != 0 and candName != "回踩" and isRange and rangeFadeOnly and
+             not na(pxRatio)
             if cand > 0 and pxRatio > 0
                 cand := 0
             else if cand < 0 and pxRatio < 0
@@ -670,7 +786,8 @@ if newBar
             [ok, g1, g2, g3, g4, g5, dist, barSz, lvlD, lvlNm] = f_loc_ok(cand)
             if ok or not useLocGate
                 float risk0 = math.abs(sc - candProt)
-                if risk0 >= minRiskATR * atrVal and cdBars <= 0
+                if risk0 >= minRiskATR * atrVal and cdBars <= 0 and
+                     (maxPerDay <= 0 or dayN < maxPerDay)
                     pDir := cand
                     pSetup := candName
                     pSess := inRTH ? "RTH" : "夜盘"
@@ -679,13 +796,18 @@ if newBar
                     pRisk := risk0
                     pProt := candProt
                     pT1 := f_next_rung(sc, cand)
-                    pT2 := f_next_rung(f_next_rung(sc, cand), cand)
+                    if math.abs(pT1 - sc) < minTgtPts
+                        pT1 := f_next_rung(pT1, cand)
+                    if math.abs(pT1 - sc) < minTgtPts
+                        pT1 := f_next_rung(pT1, cand)
+                    pT2 := f_next_rung(pT1, cand)
                     pT1d := false
                     pT2d := false
                     pFrac := 1.0
                     pR := 0.0
                     pBars := 0
                     pEntryT := time_close
+                    dayN := dayN + 1
                 if pDir != 0 and pEntryT == time_close
                     f_keep(label.new(time_close, pEntry,
                          (pDir > 0 ? "多 " : "空 ") + pSetup,
@@ -869,7 +991,7 @@ if barstate.islast
              text_size=size.small)
         table.cell(tb, 1, 7, f_fmt(0) + " ｜ " + f_fmt(1) + " ｜ " + f_fmt(2),
              text_color=color.white, text_size=size.small)
-        table.cell(tb, 0, 8, "翻转/拒绝/背离", text_color=color.silver,
+        table.cell(tb, 0, 8, "翻转/拒绝/背离/回踩", text_color=color.silver,
              text_size=size.small)
         table.cell(tb, 1, 8, f_fmt(5) + " ｜ " + f_fmt(6) + " ｜ " + f_fmt(7) +
              "　否决 " + str.tostring(vetoCount) + " 次",
