@@ -1,0 +1,720 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+// IDM v15 — 位置优先（location-first）
+//
+// v14 死于两件事，v15 直接针对它们：
+//
+//   1. 入场价 = 信号 K 的收盘价。那根 K 越大，进得越远、离止损越远、位置越差。
+//      → 用户原话：「要么在剧烈下跌时去卖，要么在剧烈上涨时去买，肯定不是好位置」
+//      → v15 加【位置闸门】：离参考线太远、信号K太大、近端冲量太强、Phase 极端
+//         —— 四者任一触发，**不入场**。这是 v15 与 v14 唯一的机制性区别。
+//
+//   2. 入场后 1-2 根内因收盘穿回 13 而离场的交易有 143 笔（31.0%），贡献 -41.6R
+//      —— 而整本账是 -41.7R。**这一类交易一个人包办了全部亏损**，且这个比例在四个
+//      数据集上是 31.9/31.0/31.8/32.6%，稳到不像市场，是规则的几何性质。
+//      → v15 要求最小持仓，并把出场换到另一条线。
+//      ⚠ 诚实标注：换出场线本身在实测里几乎没改善每笔期望（8/21/34 的均R 依次
+//        -0.067/-0.071/-0.068，非单调）。真正起作用的可能只是"最小持仓"。
+//
+//   3. Recovery 亏得比 Vomy 多十倍，主犯是【保护位太贴脸】：Recovery 的保护位
+//      中位仅 0.065 ATR，33% 的交易死在保护位；Vomy 的 fin 保护位 0.151 ATR，
+//      只有 5% 被扫。且 0.6 点点差占 6.25 点风险的 9.6%，止损太近被噪音和点差两头吃。
+//      → v15 的最小风险距离默认 0.12 ATR，并给保护位加缓冲。**这一条是实测定的。**
+//
+// 三个 setup 直接对应用户自己描述的三步：
+//   S1 趋势翻转  「袋子变红了就往下走」
+//   S2 位被拒绝  「反反复复下不去」          ← v14 完全没有
+//   S3 背离      「Saty Oscillator 底背离」   ← v14 完全没有
+//
+// 高周期偏向是【软参考】不是闸门 —— 用户明确否掉了硬闸门：
+//   「日内交易不可能一直都是单边下跌的……位置下不去以后最终不还是反抽上来了吗」
+//   所以 bias 只在面板显示、并在账本里分组，**从不阻止任何一笔入场**。
+//
+// ⚠⚠ 必须先读的一条：v14 诊断的最硬结论是【入场时点不带方向信息】——
+//     纯括号单（保护位 vs T1 谁先到，与出场规则无关）实测 53.4%，
+//     几何零假设 S/(S+T) = 56.8%，z_geom = -1.68；60 个格子的 z_geom
+//     中位 -1.33，没有一个越过 +1.96。而且【收紧任何门槛都只减少笔数，
+//     不改善每笔期望】：8 个变体把频率压掉 83%，均 R 始终在 -0.184~-0.045。
+//
+//     所以 v15 的位置闸门是一个【尚未验证的新假设】，不是已知有效的修复。
+//     它与之前测过的所有门槛有一处本质不同：那些门槛筛的是"要不要下注"，
+//     位置闸门筛的是"这一注下在什么位置"——前者改不到赔率结构，后者直接改
+//     风险距离与入场偏离度。这个区别是否真的产生期望值，正在检验：
+//     research/reports/V15_ENTRY_LOCATION.md。**在它出结果之前，不要推送。**
+//
+// 证据纪律：面板上每个数字都带标签。凡标【未验证】的，界面不得暗示它有效。
+// ═══════════════════════════════════════════════════════════════════════════
+indicator("IDM v15", "IDM v15", overlay=true,
+     max_lines_count=200, max_labels_count=300)
+
+const string VERSION_ID = "15.1.0-regime-and-named-level"
+
+// ═══ 2026-07-28 补记：与 Saty 当日实盘的逐条对账（这是 v15.1 的全部理由）═══
+//
+// 他今天（ET）一共只有两个动作，全部发生在 ATR trigger box 的两条边上：
+//   08:56 盘前  "In the trigger box with Hourly(ETH) + 10m compression …
+//               Big events → smaller range. I am probably going to
+//               sit on hands / be more picky today."   ← 先定性，再交易
+//   09:32      "10m looking Vomy, about to test PM support"（从盒顶往下）
+//   09:42      "10m Vomy indeed" → 09:46 "scale puts, leave runners"
+//   09:48      "Nice move top of range to bottom of range"（到盒底了结）
+//   10:01–10:49 "The range be ranging" / "What a box"  ← 中间【不做】
+//   11:19      "SPX/SPY testing top of range"
+//   11:27      "At 7440, almost 742. Scale longs"       ← 7440 = call trigger
+//
+// 当日实际梯子（我们图上已经画着的）：锚 7418.00｜ATR 88.21｜
+//   call trigger 7438.82｜put trigger 7397.18。他嘴里的 "range" 就是这个盒子。
+//
+// 同一天 v14 在图上做了什么：在盒【底】那一带连续做空——
+//   空Recovery→平空 −1R→空Recovery→平空 −0.6R→空Recovery→平空 −1R
+//   而面板自己写着「无排列」。也就是说，在他平掉 put、准备转多的位置，
+//   我们在反复开空，且 Vomy 要求的五线排列前提根本不成立。
+//
+// 由此得到两条 v15.1 的机制性修改：
+//
+//   A【状态层】区间里 EMA 交叉必然在最差位置发火——跌到盒底才叉下、
+//     涨到盒顶才叉上。这是几何必然，不是概率问题。所以区间态禁用交叉类
+//     setup，只留边缘拒绝与背离，且方向必须朝盒内。
+//     ⚠ 与我此前否掉的 REGIME_MONTHLY_BOX 结论不冲突：那条否掉的是
+//       「箱内就少做」（对同一套规则开关）；这里是【换规则】，不同命题。
+//
+//   B【具名位闸门】入场价必须贴着一个具名位（ATR 梯 / 夜盘·盘前·前日高低）。
+//     依据不是我的直觉，是他的行为：每一篇 #ideas 都是
+//     「IF 守住/破 <具名位> THEN 目标 <具名位>」；07-27 的赢单是
+//     「D21 盘前阻力不破 → 破区间 → Vomy → 10m200 + 夜盘缺口」；
+//     07-26 #notes 开篇是「10m divergence **at support**」。
+//     位是【位置】，EMA/背离只是【判据】。没有位 = 不下注。
+//
+// ⚠ A 与 B 都是【新假设】，与本文件下方所有「已验证」标注不同等级。
+//   它们此刻的证据是：一天的逐条对账 + 与全部语料一致。这不叫统计验证。
+//   V15_* 研究（因 session limit 全部失败）必须补跑后才谈推送。
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── 01 ATR 位（对齐官方 Saty ATR Levels，已逐位验证）────────────────────
+string G_ATR = "01 · ATR 位"
+int atrLen = input.int(14, "ATR 长度", minval=2, group=G_ATR)
+float trigPct = input.float(0.236, "Trigger 比例", step=0.001, group=G_ATR)
+bool showFib = input.bool(true, "显示全部斐波那契位", group=G_ATR)
+
+// ── 02 时段位 ─────────────────────────────────────────────────────────────
+string G_SESS = "02 · 时段位"
+bool showON = input.bool(true, "夜盘高低 (18:00→09:30 ET)", group=G_SESS)
+bool showPM = input.bool(true, "盘前高低 (04:00→09:30 ET)", group=G_SESS)
+bool showPD = input.bool(true, "前日高低 PDH/PDL", group=G_SESS)
+
+// ── 03 Ribbon / Setup 周期 ────────────────────────────────────────────────
+string G_RIB = "03 · Pivot Ribbon（8/13/21/34/48）"
+bool showRibbon = input.bool(true, "显示 Ribbon", group=G_RIB)
+string setupTF = input.timeframe("10", "Setup 计算周期", group=G_RIB,
+     tooltip="趋势与入场按此周期的【已完成】K 计算。作者原话全部是 10 分钟。" +
+         "图表周期 ≥ 此周期时自动退回按图表周期算。")
+
+// ── 04 位置闸门（v15 的核心，防追高追空）─────────────────────────────────
+string G_LOC = "04 · 位置闸门（防追高追空）"
+bool useLocGate = input.bool(true, "启用位置闸门", group=G_LOC,
+     tooltip="v15 与 v14 唯一的机制性区别。四条子闸门任一不通过则不入场。" +
+         "【研究中】各子闸门的实际效力见 research/reports/V15_ENTRY_LOCATION.md。")
+float maxDistATR = input.float(0.10, "① 入场价离 EMA13 最远（ATR）", step=0.01,
+     minval=0.01, group=G_LOC,
+     tooltip="离参考线越远 = 追得越凶。这是四条里最直接的一条。")
+float maxBarATR = input.float(0.20, "② 信号 K 最大振幅（ATR）", step=0.01,
+     minval=0.02, group=G_LOC,
+     tooltip="信号 K 越大，收盘入场就越是在这根 K 的极端位置。")
+float maxThrustATR = input.float(0.35, "③ 入场前 3 根顺向净位移上限（ATR）",
+     step=0.01, minval=0.05, group=G_LOC,
+     tooltip="近端冲量。刚刚急拉/急跌完再顺着做 = 追。")
+bool usePhaseVeto = input.bool(true, "④ Phase 顺向极端时否决", group=G_LOC,
+     tooltip="Saty 原话「3m extreme here, 10m has room」。顺方向已极端时不追。")
+float phaseExtreme = input.float(61.8, "Phase 极端阈值", step=0.1, group=G_LOC)
+bool useLvlGate = input.bool(true, "⑤ 入场必须贴着一个具名位", group=G_LOC,
+     tooltip="【2026-07-28 Saty 实盘对照后新增，也是本闸门里最硬的一条】" +
+         "他每一篇 #ideas 都是「IF 守住/破 <具名位> THEN 目标 <具名位>」；" +
+         "07-27 的赢单是「D21 盘前阻力不破 → 破区间 → Vomy → 10m200 + 夜盘缺口」；" +
+         "07-28 全天只有两个动作，都发生在 trigger box 的两条边上" +
+         "（09:48「top of range to bottom of range」、11:27「At 7440」= call trigger 7438.82）。" +
+         "结论：位是【位置】，EMA/背离只是【判据】。没有位 = 不下注。")
+float maxLvlDistATR = input.float(0.10, "⑤ 离最近具名位最远（ATR）", step=0.01,
+     minval=0.01, group=G_LOC)
+bool lvlIncludeSess = input.bool(true, "⑤ 具名位含夜盘/盘前/前日高低", group=G_LOC,
+     tooltip="语料统计里他用得最多的三组非 ATR 位。今天 09:32 那句" +
+         "「about to test PM support」用的就是盘前低点。")
+
+// ── 04b 状态层：区间 vs 趋势（v15.1 新增，今天最重要的一条）──────────────
+string G_REG = "04b · 状态层（区间 / 趋势）"
+bool useRegime = input.bool(true, "启用状态层", group=G_REG,
+     tooltip="v14 在区间里连续做空同一个价格带、每笔 −1R。这不是参数问题：" +
+         "区间里 EMA 交叉【必然】在最差位置发火——跌到区间底才叉下、涨到顶才叉上。" +
+         "符号是反的，不是幅度不对。这解释了为什么收紧任何门槛都只减少笔数。" +
+         "Saty 07-28 盘前先定性「in the trigger box + compression → smaller range，" +
+         "sit on hands / be more picky」，再只在两条边上动手。")
+bool rangeNoFlip = input.bool(true, "区间态禁用 S1 翻转", group=G_REG,
+     tooltip="交叉类信号在区间内是负期望的主要来源。区间态只留 S2 拒绝 + S3 背离。")
+bool rangeFadeOnly = input.bool(true, "区间态只做「离开边缘」方向", group=G_REG,
+     tooltip="在盒子下沿只能做多、上沿只能做空。这就是他今天的两个动作。")
+
+// ── 05 Setup ──────────────────────────────────────────────────────────────
+string G_SET = "05 · Setup"
+bool enFlip = input.bool(true, "S1 趋势翻转（袋子变色 + 站到外侧）", group=G_SET)
+bool enHold = input.bool(true, "S2 位被拒绝（同位反复不破后收复）", group=G_SET)
+bool enDiv = input.bool(true, "S3 背离（Phase 与价格背离）", group=G_SET)
+int holdTouches = input.int(2, "S2 需要的最少触及次数", minval=1, maxval=5,
+     group=G_SET, tooltip="用户原话「反反复复下不去」。2 或 3 都合理；" +
+         "【未验证】哪个更好——研究中，见 V15_LEVEL_RETEST_AND_DIVERGENCE.md。")
+int divLookback = input.int(20, "S3 背离回看根数", minval=5, group=G_SET)
+float minRiskATR = input.float(0.12, "最小风险距离（ATR）", step=0.01, group=G_SET,
+     tooltip="【实测定的，不是拍脑袋】v14 诊断：Recovery 的保护位中位仅 0.065 ATR，" +
+         "33% 的交易死在保护位；Vomy 的 fin 保护位 0.151 ATR，只有 5% 被扫。" +
+         "而且 0.6 点点差占 6.25 点风险的 9.6%——止损太近同时被噪音和点差两头吃。")
+float stopBufATR = input.float(0.03, "保护位缓冲（ATR）", step=0.01, group=G_SET,
+     tooltip="把保护位从结构极值再外推一点，避开贴脸止损。同上，实测驱动。")
+
+// ── 06 出场（与入场用不同的线，修 v14 的同线缺陷）───────────────────────
+string G_EXIT = "06 · 出场"
+string EXIT_34 = "收盘穿 EMA34"
+string EXIT_21 = "收盘穿 EMA21"
+string EXIT_48 = "收盘穿 EMA48"
+string exitLine = input.string(EXIT_34, "结构离场用哪条线", group=G_EXIT,
+     options=[EXIT_21, EXIT_34, EXIT_48],
+     tooltip="**不可选 EMA13**——入场看 13，出场必须换一条线，" +
+         "否则同阈值来回穿必然 churn（v14 实测：churn 占理论上界 77%）。")
+int minHoldBars = input.int(3, "最小持仓（setup K 根数）", minval=0, group=G_EXIT,
+     tooltip="入场后 N 根内不因结构条件离场，只认保护位。防止一进就被震出。")
+int cooldownBars = input.int(6, "同向冷却（setup K 根数）", minval=0, group=G_EXIT)
+
+// ── 07 偏向（软参考，永不阻止入场）───────────────────────────────────────
+string G_BIAS = "07 · 偏向（只显示与分组，不当闸门）"
+bool showBias = input.bool(true, "显示日线偏向", group=G_BIAS,
+     tooltip="用户明确否掉了硬闸门：「日内交易不可能一直都是单边下跌的」。" +
+         "所以偏向只用于显示与账本分组，从不阻止任何一笔入场。")
+
+// ── 08 显示 ───────────────────────────────────────────────────────────────
+string G_VIEW = "08 · 显示"
+bool showPanel = input.bool(true, "显示面板", group=G_VIEW)
+bool showLedger = input.bool(true, "显示账本", group=G_VIEW)
+bool showVetoMarks = input.bool(true, "标出被位置闸门否决的信号", group=G_VIEW,
+     tooltip="小灰点 = 有 setup 但位置太差被否决。这是 v15 最该看的东西：" +
+         "它让你看见【系统忍住没追】的那些时刻。")
+
+// ── 标签环形缓冲 ─────────────────────────────────────────────────────────
+const int LABEL_CAP = 180
+var array<label> keepL = array.new<label>()
+f_keep(label lb) =>
+    array.push(keepL, lb)
+    if array.size(keepL) > LABEL_CAP
+        label.delete(array.shift(keepL))
+    lb
+
+// ── ATR 位引擎（官方构造）────────────────────────────────────────────────
+var string tkr = ticker.new(syminfo.prefix, syminfo.ticker,
+     session=session.extended)
+[anchor, atrVal, pdh, pdl] = request.security(tkr, "D",
+     [close[1], ta.atr(atrLen)[1], high[1], low[1]],
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+f_at(float r) => anchor + r * atrVal
+
+var array<float> RUNGS = array.from(-1.618, -1.272, -1.0, -0.786, -0.618,
+     -0.5, -0.382, -0.236, 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0,
+     1.272, 1.618)
+
+f_next_rung(float px, int dir) =>
+    float best = na
+    if atrVal > 0
+        for i = 0 to array.size(RUNGS) - 1
+            float lv = f_at(array.get(RUNGS, i))
+            if dir > 0 and lv > px + syminfo.mintick and (na(best) or lv < best)
+                best := lv
+            if dir < 0 and lv < px - syminfo.mintick and (na(best) or lv > best)
+                best := lv
+    na(best) ? px + dir * 0.236 * atrVal : best
+
+f_nearest_rung(float px) =>
+    float best = na
+    float bd = na
+    if atrVal > 0
+        for i = 0 to array.size(RUNGS) - 1
+            float lv = f_at(array.get(RUNGS, i))
+            float d = math.abs(px - lv)
+            if na(bd) or d < bd
+                bd := d
+                best := lv
+    [best, bd]
+
+// ── 时段区间 ─────────────────────────────────────────────────────────────
+f_sess(string s, bool on) =>
+    var float hi = na
+    var float lo = na
+    bool inS = on and not na(time(timeframe.period, s, "America/New_York"))
+    if inS and not inS[1]
+        hi := high
+        lo := low
+    else if inS
+        hi := math.max(nz(hi, high), high)
+        lo := math.min(nz(lo, low), low)
+    [hi, lo]
+[onHi, onLo] = f_sess("1800-0930", showON)
+[pmHi, pmLo] = f_sess("0400-0930", showPM)
+bool inRTH = not na(time(timeframe.period, "0930-1600", "America/New_York"))
+
+// ── 具名位全集（ATR 梯 + 时段位）─────────────────────────────────────────
+// 「具名位」= 他会在帖子里点名的那种位。ATR 梯是一组，夜盘/盘前/前日高低是另一组
+// （语料统计里这三组出现频率最高，见 SATY_PLAYBOOK_CORPUS.md 第三节）。
+f_nearest_named(float px) =>
+    [rl, rd] = f_nearest_rung(px)
+    float best = rl
+    float bd = rd
+    string nm = "ATR位"
+    if lvlIncludeSess
+        array<float> ls = array.from(onHi, onLo, pmHi, pmLo, pdh, pdl)
+        array<string> ns = array.from("夜盘高", "夜盘低", "盘前高", "盘前低",
+             "PDH", "PDL")
+        for i = 0 to array.size(ls) - 1
+            float lv = array.get(ls, i)
+            if not na(lv)
+                float d = math.abs(px - lv)
+                if na(bd) or d < bd
+                    bd := d
+                    best := lv
+                    nm := array.get(ns, i)
+    [best, bd, nm]
+
+// ── Setup 周期的 ribbon + Phase（非重绘：[1] + lookahead_on）────────────
+f_phase(float src, float a) => a > 0 ? (src - ta.ema(src, 21)) / (3.0 * a) * 100 : na
+
+[h8, h13, h21, h34, h48, hC, hH, hL, hPh, hT, hAtr] =
+     request.security(syminfo.tickerid, setupTF,
+     [ta.ema(close, 8)[1], ta.ema(close, 13)[1], ta.ema(close, 21)[1],
+      ta.ema(close, 34)[1], ta.ema(close, 48)[1], close[1], high[1], low[1],
+      ta.ema(f_phase(close, ta.atr(14)), 3)[1], time[1], ta.atr(14)[1]],
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+
+bool useHTF = timeframe.in_seconds(setupTF) >
+     timeframe.in_seconds(timeframe.period)
+float e8 = useHTF ? h8 : ta.ema(close, 8)
+float e13 = useHTF ? h13 : ta.ema(close, 13)
+float e21 = useHTF ? h21 : ta.ema(close, 21)
+float e34 = useHTF ? h34 : ta.ema(close, 34)
+float e48 = useHTF ? h48 : ta.ema(close, 48)
+float sc = useHTF ? hC : close
+float sh = useHTF ? hH : high
+float sl = useHTF ? hL : low
+float phase = useHTF ? hPh : ta.ema(f_phase(close, ta.atr(14)), 3)
+bool newBar = useHTF ? ta.change(hT) != 0 : barstate.isconfirmed
+
+bool stackBull = e8 > e13 and e13 > e21 and e21 > e34 and e34 > e48
+bool stackBear = e8 < e13 and e13 < e21 and e21 < e34 and e34 < e48
+float exitRef = exitLine == EXIT_21 ? e21 : exitLine == EXIT_48 ? e48 : e34
+
+// ── 状态层：区间 vs 趋势 ─────────────────────────────────────────────────
+// 区间 = ①价格还在 trigger box 内（|ratio| <= 0.236，他嘴里的 "in the trigger box"）
+//        或 ②五条 EMA 未排列（他嘴里的 compression / "no trend"）
+// 趋势 = 五线排列 且 已在 box 外
+// ⚠ 这【不是】我之前否掉的那种 regime 过滤器。REGIME_MONTHLY_BOX 否掉的是
+//   「箱内胜率更低，所以少做」——那是对【同一套规则】开关。这里是【换规则】：
+//   区间态改用边缘拒绝，趋势态才用交叉/破位。两者是不同的命题。
+float pxRatio = atrVal > 0 ? (sc - anchor) / atrVal : na
+bool inBox = not na(pxRatio) and math.abs(pxRatio) <= trigPct
+bool stacked = stackBull or stackBear
+bool isRange = useRegime and (inBox or not stacked)
+string regimeTxt = not useRegime ? "（状态层关闭）" :
+     isRange ? (inBox ? "区间（trigger box 内）" : "区间（未排列/压缩）") :
+     (stackBull ? "趋势·多" : "趋势·空")
+
+// 日线偏向（软参考）
+[d21, dAnchorM] = request.security(tkr, "D", [ta.ema(close, 21), close],
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+int biasDir = close > d21 ? 1 : close < d21 ? -1 : 0
+
+// ── 位置闸门 ─────────────────────────────────────────────────────────────
+// 四条子闸门；任一不通过 → 该 setup 被否决（记录但不入场）
+f_loc_ok(int dir) =>
+    float dist = math.abs(sc - e13) / math.max(atrVal, syminfo.mintick)
+    float barSz = (sh - sl) / math.max(atrVal, syminfo.mintick)
+    float thrust = useHTF ? na : (close - close[3]) * dir /
+         math.max(atrVal, syminfo.mintick)
+    [nlv, nld, nnm] = f_nearest_named(sc)
+    float lvlD = na(nld) ? na : nld / math.max(atrVal, syminfo.mintick)
+    bool g1 = dist <= maxDistATR
+    bool g2 = barSz <= maxBarATR
+    bool g3 = na(thrust) or thrust <= maxThrustATR
+    bool g4 = not usePhaseVeto or na(phase) or
+         (dir > 0 ? phase < phaseExtreme : phase > -phaseExtreme)
+    bool g5 = not useLvlGate or (not na(lvlD) and lvlD <= maxLvlDistATR)
+    [g1 and g2 and g3 and g4 and g5, g1, g2, g3, g4, g5, dist, barSz,
+     lvlD, nnm]
+
+// ── 位触及计数（S2「反反复复下不去」）───────────────────────────────────
+// 对最近的具名位记「独立触及次数」：进入 ±0.03 ATR 带算一次，
+// 必须离开 ≥0.05 ATR 才能记下一次。
+var float watchLvl = na
+var int touchN = 0
+var bool inBand = false
+if newBar and atrVal > 0
+    [nr, nd] = f_nearest_rung(sc)
+    float bandIn = 0.03 * atrVal
+    float bandOut = 0.05 * atrVal
+    if na(watchLvl) or math.abs(nr - watchLvl) > syminfo.mintick
+        // 换了一个最近位 → 重新计数
+        watchLvl := nr
+        touchN := 0
+        inBand := false
+    bool nowIn = math.abs(sc - watchLvl) <= bandIn
+    if nowIn and not inBand
+        touchN := touchN + 1
+        inBand := true
+    else if inBand and math.abs(sc - watchLvl) > bandOut
+        inBand := false
+
+// ── 背离（S3）────────────────────────────────────────────────────────────
+f_div_bull() =>
+    bool r = false
+    if newBar and not na(phase)
+        float pl = ta.lowest(sl, divLookback)
+        float ol = ta.lowest(phase, divLookback)
+        r := sl <= pl + syminfo.mintick and phase > ol + 1.0
+    r
+f_div_bear() =>
+    bool r = false
+    if newBar and not na(phase)
+        float ph = ta.highest(sh, divLookback)
+        float oh = ta.highest(phase, divLookback)
+        r := sh >= ph - syminfo.mintick and phase < oh - 1.0
+    r
+bool divBull = f_div_bull()
+bool divBear = f_div_bear()
+
+// ── 持仓状态 ─────────────────────────────────────────────────────────────
+var int pDir = 0
+var string pSetup = ""
+var string pSess = ""
+var int pBias = 0
+var float pEntry = na
+var float pRisk = na
+var float pProt = na
+var float pT1 = na
+var float pT2 = na
+var bool pT1d = false
+var bool pT2d = false
+var float pFrac = 1.0
+var float pR = 0.0
+var int pBars = 0
+var int pEntryT = na
+var int cdBars = 0
+
+// 账本：0 全部 1 RTH 2 夜盘 3 顺偏向 4 逆偏向 5 S1 6 S2 7 S3
+var array<int> agN = array.new<int>(8, 0)
+var array<int> agW = array.new<int>(8, 0)
+var array<float> agR = array.new<float>(8, 0.0)
+f_led(bool rth, int bias, int dir, string su, float r) =>
+    int si = su == "翻转" ? 5 : su == "拒绝" ? 6 : 7
+    int[] ix = array.from(0, rth ? 1 : 2, bias == dir ? 3 : 4, si)
+    for i = 0 to 3
+        int k = array.get(ix, i)
+        array.set(agN, k, array.get(agN, k) + 1)
+        array.set(agR, k, array.get(agR, k) + r)
+        if r > 0
+            array.set(agW, k, array.get(agW, k) + 1)
+
+string alertQ = ""
+var int vetoCount = 0
+
+// ══ 引擎（只在 setup 周期的完成 K 上推进）═══════════════════════════════
+if newBar
+    if cdBars > 0
+        cdBars := cdBars - 1
+
+    // ---- 管理持仓 ----
+    if pDir != 0
+        pBars := pBars + 1
+        bool hitProt = pDir > 0 ? sl <= pProt : sh >= pProt
+        bool hitT1 = not pT1d and (pDir > 0 ? sh >= pT1 : sl <= pT1)
+        bool hitT2 = pT1d and not pT2d and (pDir > 0 ? sh >= pT2 : sl <= pT2)
+        // 结构离场用【另一条线】，且要过最小持仓
+        bool structOut = pBars > minHoldBars and
+             (pDir > 0 ? sc < exitRef : sc > exitRef)
+        if hitProt
+            pR += pFrac * (pProt - pEntry) * pDir / pRisk
+            f_led(pSess == "RTH", pBias, pDir, pSetup, pR)
+            f_keep(label.new(time_close, pProt,
+                 (pDir > 0 ? "平多 " : "平空 ") + (pR >= 0 ? "+" : "") +
+                 str.tostring(pR, "#.##") + "R", xloc=xloc.bar_time,
+                 style=pDir > 0 ? label.style_label_down : label.style_label_up,
+                 color=color.new(pR >= 0 ? color.teal : color.maroon, 0),
+                 textcolor=color.white, size=size.small,
+                 tooltip="保护位｜" + pSetup + "｜" + pSess))
+            alertQ += "【v15】" + (pDir > 0 ? "平多 " : "平空 ") +
+                 str.tostring(pR, "#.##") + "R（保护位）\n"
+            cdBars := cooldownBars
+            pDir := 0
+        else
+            if hitT1
+                pR += 0.50 * (pT1 - pEntry) * pDir / pRisk
+                pFrac -= 0.50
+                pT1d := true
+                alertQ += "【v15】T1 " + str.tostring(pT1, format.mintick) +
+                     " 兑现 50%\n"
+            if hitT2
+                pR += 0.25 * (pT2 - pEntry) * pDir / pRisk
+                pFrac -= 0.25
+                pT2d := true
+                alertQ += "【v15】T2 " + str.tostring(pT2, format.mintick) +
+                     " 兑现 25%\n"
+            if structOut
+                pR += pFrac * (sc - pEntry) * pDir / pRisk
+                f_led(pSess == "RTH", pBias, pDir, pSetup, pR)
+                f_keep(label.new(time_close, sc,
+                     (pDir > 0 ? "平多 " : "平空 ") + (pR >= 0 ? "+" : "") +
+                     str.tostring(pR, "#.##") + "R", xloc=xloc.bar_time,
+                     style=pDir > 0 ? label.style_label_down :
+                          label.style_label_up,
+                     color=color.new(pR >= 0 ? color.teal : color.maroon, 0),
+                     textcolor=color.white, size=size.small,
+                     tooltip="结构离场（" + exitLine + "）｜" + pSetup))
+                alertQ += "【v15】" + (pDir > 0 ? "平多 " : "平空 ") +
+                     str.tostring(pR, "#.##") + "R（结构）\n"
+                cdBars := cooldownBars
+                pDir := 0
+
+    // ---- 找 setup（只在空仓时）----
+    if pDir == 0
+        int cand = 0
+        string candName = ""
+        float candProt = na
+        // S1 趋势翻转：袋子刚变色 + 价格站到外侧
+        // 区间态默认禁用——交叉类信号在区间内必然发在最差位置（v14 实证）
+        if enFlip and not (isRange and rangeNoFlip)
+            if stackBull and not stackBull[1] and sc > e8
+                cand := 1
+                candName := "翻转"
+                candProt := ta.lowest(sl, 5) - stopBufATR * atrVal
+            else if stackBear and not stackBear[1] and sc < e8
+                cand := -1
+                candName := "翻转"
+                candProt := ta.highest(sh, 5) + stopBufATR * atrVal
+        // S2 位被拒绝：同一个位被测试 >= N 次，然后从该位离开
+        if cand == 0 and enHold and touchN >= holdTouches and not na(watchLvl)
+            if sl <= watchLvl and sc > watchLvl and sc > e13
+                cand := 1
+                candName := "拒绝"
+                candProt := math.min(sl, watchLvl - 0.03 * atrVal)
+            else if sh >= watchLvl and sc < watchLvl and sc < e13
+                cand := -1
+                candName := "拒绝"
+                candProt := math.max(sh, watchLvl + 0.03 * atrVal)
+        // S3 背离
+        if cand == 0 and enDiv
+            if divBull and sc > sl
+                cand := 1
+                candName := "背离"
+                candProt := ta.lowest(sl, 3) - stopBufATR * atrVal
+            else if divBear and sc < sh
+                cand := -1
+                candName := "背离"
+                candProt := ta.highest(sh, 3) + stopBufATR * atrVal
+        // ---- 区间态：只做「离开边缘」的方向 ----
+        // 在盒子下沿只能做多、上沿只能做空。这就是他 07-28 的两个动作：
+        // 09:32 顶部转空 → 09:48「top of range to bottom of range」平；
+        // 11:19 回到顶部 → 11:27「At 7440（=call trigger）… Scale longs」。
+        if cand != 0 and isRange and rangeFadeOnly and not na(pxRatio)
+            if cand > 0 and pxRatio > 0
+                cand := 0
+            else if cand < 0 and pxRatio < 0
+                cand := 0
+
+        // ---- 位置闸门 ----
+        if cand != 0
+            [ok, g1, g2, g3, g4, g5, dist, barSz, lvlD, lvlNm] = f_loc_ok(cand)
+            if ok or not useLocGate
+                float risk0 = math.abs(sc - candProt)
+                if risk0 >= minRiskATR * atrVal and cdBars <= 0
+                    pDir := cand
+                    pSetup := candName
+                    pSess := inRTH ? "RTH" : "夜盘"
+                    pBias := biasDir
+                    pEntry := sc
+                    pRisk := risk0
+                    pProt := candProt
+                    pT1 := f_next_rung(sc, cand)
+                    pT2 := f_next_rung(f_next_rung(sc, cand), cand)
+                    pT1d := false
+                    pT2d := false
+                    pFrac := 1.0
+                    pR := 0.0
+                    pBars := 0
+                    pEntryT := time_close
+                if pDir != 0 and pEntryT == time_close
+                    f_keep(label.new(time_close, pEntry,
+                         (pDir > 0 ? "多 " : "空 ") + pSetup,
+                         xloc=xloc.bar_time,
+                         style=pDir > 0 ? label.style_label_up :
+                              label.style_label_down,
+                         color=color.new(pDir > 0 ? color.green : color.red, 0),
+                         textcolor=color.white, size=size.normal,
+                         tooltip="入场 " + str.tostring(pEntry, format.mintick) +
+                              "｜保护 " + str.tostring(pProt, format.mintick) +
+                              "｜风险 " + str.tostring(pRisk, "#.#") + " 点" +
+                              "｜离13 " + str.tostring(dist, "#.###") + " ATR" +
+                              "｜贴位 " + lvlNm + " " +
+                              str.tostring(lvlD, "#.###") + " ATR" +
+                              "｜状态 " + regimeTxt +
+                              "｜T1 " + str.tostring(pT1, format.mintick) +
+                              "｜T2 " + str.tostring(pT2, format.mintick) +
+                              "｜偏向" + (biasDir == pDir ? "同向" : "逆向")))
+                    alertQ += "【v15】" + (pDir > 0 ? "开多 " : "开空 ") +
+                         pSetup + "｜" + pSess + "｜入场 " +
+                         str.tostring(pEntry, format.mintick) + "｜保护 " +
+                         str.tostring(pProt, format.mintick) + "｜T1 " +
+                         str.tostring(pT1, format.mintick) + "｜T2 " +
+                         str.tostring(pT2, format.mintick) + "\n"
+            else
+                vetoCount := vetoCount + 1
+                if showVetoMarks
+                    string why = (not g1 ? "离13太远 " +
+                         str.tostring(dist, "#.##") + "ATR " : "") +
+                         (not g2 ? "K太大 " + str.tostring(barSz, "#.##") +
+                         "ATR " : "") + (not g3 ? "近端冲量过强 " : "") +
+                         (not g4 ? "Phase顺向极端 " : "") +
+                         (not g5 ? "不贴任何具名位（最近 " + lvlNm + " " +
+                         str.tostring(lvlD, "#.##") + "ATR）" : "")
+                    f_keep(label.new(time_close, cand > 0 ? sl : sh, "·",
+                         xloc=xloc.bar_time, style=label.style_label_center,
+                         color=color.new(color.gray, 80),
+                         textcolor=color.new(color.gray, 30), size=size.tiny,
+                         tooltip="位置闸门否决｜" + candName + "｜" + why))
+
+if alertQ != ""
+    alert(alertQ, alert.freq_once_per_bar_close)
+
+// ── 画位 ─────────────────────────────────────────────────────────────────
+plot(f_at(0.0), "PDC", color=color.new(color.white, 0), linewidth=2,
+     style=plot.style_stepline)
+plot(f_at(trigPct), "Call trig", color=color.new(color.aqua, 0),
+     style=plot.style_stepline)
+plot(f_at(-trigPct), "Put trig", color=color.new(color.yellow, 0),
+     style=plot.style_stepline)
+plot(showFib ? f_at(0.382) : na, "+0.382", color=color.new(color.gray, 45),
+     style=plot.style_stepline)
+plot(showFib ? f_at(-0.382) : na, "-0.382", color=color.new(color.gray, 45),
+     style=plot.style_stepline)
+plot(showFib ? f_at(0.5) : na, "+0.5", color=color.new(color.silver, 30),
+     style=plot.style_stepline)
+plot(showFib ? f_at(-0.5) : na, "-0.5", color=color.new(color.silver, 30),
+     style=plot.style_stepline)
+plot(showFib ? f_at(0.618) : na, "+0.618", color=color.new(color.silver, 30),
+     style=plot.style_stepline)
+plot(showFib ? f_at(-0.618) : na, "-0.618", color=color.new(color.silver, 30),
+     style=plot.style_stepline)
+plot(f_at(1.0), "+1 ATR", color=color.new(color.white, 25),
+     style=plot.style_stepline)
+plot(f_at(-1.0), "-1 ATR", color=color.new(color.white, 25),
+     style=plot.style_stepline)
+plot(showON ? onHi : na, "夜盘高", color=color.new(color.purple, 30),
+     style=plot.style_stepline)
+plot(showON ? onLo : na, "夜盘低", color=color.new(color.purple, 30),
+     style=plot.style_stepline)
+plot(showPM ? pmHi : na, "盘前高", color=color.new(color.orange, 35),
+     style=plot.style_stepline)
+plot(showPM ? pmLo : na, "盘前低", color=color.new(color.orange, 35),
+     style=plot.style_stepline)
+plot(showPD ? pdh : na, "PDH", color=color.new(color.blue, 45),
+     style=plot.style_stepline)
+plot(showPD ? pdl : na, "PDL", color=color.new(color.blue, 45),
+     style=plot.style_stepline)
+
+color ribCol = stackBull ? color.new(color.green, 60) :
+     stackBear ? color.new(color.red, 60) : color.new(color.gray, 70)
+plot(showRibbon ? e8 : na, "EMA8", color=ribCol)
+plot(showRibbon ? e13 : na, "EMA13 入场参考",
+     color=showRibbon ? color.new(color.white, 30) : na, linewidth=2)
+plot(showRibbon ? e21 : na, "EMA21", color=ribCol)
+plot(showRibbon ? e34 : na, "EMA34", color=ribCol)
+plot(showRibbon ? e48 : na, "EMA48",
+     color=showRibbon ? color.new(color.fuchsia, 40) : na, linewidth=2)
+plot(showRibbon ? exitRef : na, "出场参考线",
+     color=showRibbon ? color.new(color.orange, 20) : na, linewidth=2,
+     style=plot.style_circles)
+
+// ── 面板 ─────────────────────────────────────────────────────────────────
+f_fmt(int k) =>
+    int n = array.get(agN, k)
+    n == 0 ? "—" : str.tostring(n) + "笔 " +
+         str.tostring(100.0 * array.get(agW, k) / n, "#") + "% " +
+         (array.get(agR, k) >= 0 ? "+" : "") +
+         str.tostring(array.get(agR, k), "#.#") + "R"
+
+var table tb = table.new(position.bottom_right, 2, 10, border_width=1,
+     frame_width=1, frame_color=color.new(color.gray, 60))
+
+if barstate.islast
+    float upT = f_next_rung(close, 1)
+    float dnT = f_next_rung(close, -1)
+    [nrl, nrd] = f_nearest_rung(close)
+    string state = pDir != 0 ?
+         (pDir > 0 ? "持多 " : "持空 ") + pSetup + " 入 " +
+              str.tostring(pEntry, format.mintick) + "｜保护 " +
+              str.tostring(pProt, format.mintick) +
+              (pT1d ? (pT2d ? "｜runner" : "｜等T2 " +
+              str.tostring(pT2, format.mintick)) : "｜等T1 " +
+              str.tostring(pT1, format.mintick)) :
+         (cdBars > 0 ? "冷却中 " + str.tostring(cdBars) + " 根" :
+          "空仓待命｜等 翻转/拒绝/背离 + 位置闸门通过")
+    if showPanel
+        table.cell(tb, 0, 0, "IDM v15", text_color=color.white,
+             bgcolor=color.new(color.blue, 55), text_size=size.small)
+        table.cell(tb, 1, 0, "Setup " + setupTF + "m｜" +
+             (inRTH ? "RTH" : "夜盘"), text_color=color.white,
+             bgcolor=color.new(color.blue, 55), text_size=size.small)
+        table.cell(tb, 0, 1, "状态", text_color=color.silver, text_size=size.small)
+        table.cell(tb, 1, 1, regimeTxt + (isRange ?
+             "｜只做边缘拒绝，交叉类已禁用" : "｜三类 setup 全开"),
+             text_color=isRange ? color.orange : color.lime,
+             text_size=size.small)
+        table.cell(tb, 0, 9, "结构", text_color=color.silver, text_size=size.small)
+        table.cell(tb, 1, 9, (stackBull ? "多头排列" : stackBear ? "空头排列" :
+             "无排列") + "｜Phase " + (na(phase) ? "—" :
+             str.tostring(phase, "#")) + (na(phase) ? "" :
+             (math.abs(phase) >= phaseExtreme ? " ⚠极端" : "")),
+             text_color=color.white, text_size=size.small)
+        table.cell(tb, 0, 2, "偏向【软】", text_color=color.silver,
+             text_size=size.small)
+        table.cell(tb, 1, 2, showBias ? ((biasDir > 0 ? "日线21之上 偏多" :
+             biasDir < 0 ? "日线21之下 偏空" : "贴线") +
+             "（仅参考，不阻止入场）") : "—",
+             text_color=biasDir > 0 ? color.aqua : color.yellow,
+             text_size=size.small)
+        table.cell(tb, 0, 3, "最近的位", text_color=color.silver,
+             text_size=size.small)
+        table.cell(tb, 1, 3, str.tostring(nrl, format.mintick) + "｜距 " +
+             str.tostring(atrVal > 0 ? nrd / atrVal : na, "#.##") +
+             " ATR｜已测 " + str.tostring(touchN) + " 次",
+             text_color=color.white, text_size=size.small)
+        table.cell(tb, 0, 4, "上方分支", text_color=color.silver,
+             text_size=size.small)
+        table.cell(tb, 1, 4, "上破 → " + str.tostring(upT, format.mintick) +
+             "，再 " + str.tostring(f_next_rung(upT, 1), format.mintick),
+             text_color=color.aqua, text_size=size.small)
+        table.cell(tb, 0, 5, "下方分支", text_color=color.silver,
+             text_size=size.small)
+        table.cell(tb, 1, 5, "下破 → " + str.tostring(dnT, format.mintick) +
+             "，再 " + str.tostring(f_next_rung(dnT, -1), format.mintick),
+             text_color=color.yellow, text_size=size.small)
+        table.cell(tb, 0, 6, "状态", text_color=color.silver, text_size=size.small)
+        table.cell(tb, 1, 6, state, text_color=color.white, text_size=size.small)
+    if showLedger
+        table.cell(tb, 0, 7, "账本 全/RTH/夜", text_color=color.silver,
+             text_size=size.small)
+        table.cell(tb, 1, 7, f_fmt(0) + " ｜ " + f_fmt(1) + " ｜ " + f_fmt(2),
+             text_color=color.white, text_size=size.small)
+        table.cell(tb, 0, 8, "翻转/拒绝/背离", text_color=color.silver,
+             text_size=size.small)
+        table.cell(tb, 1, 8, f_fmt(5) + " ｜ " + f_fmt(6) + " ｜ " + f_fmt(7) +
+             "　否决 " + str.tostring(vetoCount) + " 次",
+             text_color=color.white, text_size=size.small)
+
+// ── 审计 ─────────────────────────────────────────────────────────────────
+plot(pDir, "audit: dir", color=na, display=display.data_window)
+plot(array.get(agR, 0), "audit: total R", color=na, display=display.data_window)
+plot(vetoCount, "audit: veto count", color=na, display=display.data_window)
+plot(anchor, "audit: anchor", color=na, display=display.data_window)
+plot(atrVal, "audit: atr", color=na, display=display.data_window)
+plot(phase, "audit: phase", color=na, display=display.data_window)
+plot(touchN, "audit: touch count", color=na, display=display.data_window)

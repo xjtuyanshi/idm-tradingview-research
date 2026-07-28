@@ -31,7 +31,7 @@
 indicator("IDM v14", "IDM v14", overlay=true,
      max_lines_count=150, max_labels_count=250)
 
-const string VERSION_ID = "14.1.0-system"
+const string VERSION_ID = "14.2.0-htf-setup"
 
 // ── Inputs ────────────────────────────────────────────────────────────────
 string G_ATR = "01 · ATR 位（对齐官方 Saty ATR Levels）"
@@ -53,10 +53,11 @@ bool showPrevDay = input.bool(true, "前日高低 PDH/PDL", group=G_SESS)
 
 string G_RIB = "03 · Pivot Ribbon（8/13/21/34/48，作者定义）"
 bool showRibbon = input.bool(true, "显示 Ribbon", group=G_RIB)
-bool showTimeWarp = input.bool(true, "显示 TimeWarp 上级 13/48", group=G_RIB,
-     tooltip="在执行周期图上叠加上级周期的 13/48 EMA。作者标准配对：3m 图配 10m。" +
-         "上级线盘中随上级 K 实时变化（作者原版同此），仅作语境显示，不参与信号判定。")
-string twTF = input.timeframe("10", "TimeWarp 上级周期", group=G_RIB)
+string setupTF = input.timeframe("10", "Setup 计算周期", group=G_RIB,
+     tooltip="趋势与入场逻辑按此周期的【已完成】K 计算。作者的 setup 原话全部是 10 分钟" +
+         "（\"10m Vomy\"、\"In 10m continuation\"）——3m 图只用来看执行细节。" +
+         "图上画的 ribbon 就是此周期的 ribbon（阶梯状=正常）。" +
+         "图表周期大于此周期时，自动退回按图表周期计算。")
 
 string G_SET = "04 · Setup 状态机"
 bool enRecovery = input.bool(true, "启用 Ribbon Recovery（顺势回踩收复）", group=G_SET)
@@ -139,25 +140,44 @@ f_sess_range(string sess, bool enabled) =>
 [pmHigh, pmLow] = f_sess_range("0400-0930", showPremarket)
 bool inRTH = not na(time(timeframe.period, "0930-1600", "America/New_York"))
 
-// ── Ribbon ────────────────────────────────────────────────────────────────
-float e8 = ta.ema(close, 8)
-float e13 = ta.ema(close, 13)
-float e21 = ta.ema(close, 21)
-float e34 = ta.ema(close, 34)
-float e48 = ta.ema(close, 48)
+// ── Ribbon（按 Setup 周期的已完成 K 计算——作者读的是 10m 趋势）──────────
+// Non-repaint: [1] + lookahead_on = the last COMPLETED setup-TF bar.
+float l8 = ta.ema(close, 8)
+float l13 = ta.ema(close, 13)
+float l21 = ta.ema(close, 21)
+float l34 = ta.ema(close, 34)
+float l48 = ta.ema(close, 48)
+
+[h8, h13, h21, h34, h48, hC, hH, hL, hHH10, hLL10, hT] =
+     request.security(syminfo.tickerid, setupTF,
+     [ta.ema(close, 8)[1], ta.ema(close, 13)[1], ta.ema(close, 21)[1],
+      ta.ema(close, 34)[1], ta.ema(close, 48)[1], close[1], high[1], low[1],
+      ta.highest(high, 10)[1], ta.lowest(low, 10)[1], time[1]],
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+
+bool useHTF = timeframe.in_seconds(setupTF) >
+     timeframe.in_seconds(timeframe.period)
+float e8 = useHTF ? h8 : l8
+float e13 = useHTF ? h13 : l13
+float e21 = useHTF ? h21 : l21
+float e34 = useHTF ? h34 : l34
+float e48 = useHTF ? h48 : l48
+// setup-bar OHLC used by the state machines (chart bars only fill/track)
+float sc = useHTF ? hC : close
+float sh = useHTF ? hH : high
+float sl = useHTF ? hL : low
+float hh10 = useHTF ? hHH10 : ta.highest(high, 10)
+float ll10 = useHTF ? hLL10 : ta.lowest(low, 10)
+bool newSetupBar = useHTF ? ta.change(hT) != 0 : true
+
 bool stackBull = e8 > e13 and e13 > e21 and e21 > e34 and e34 > e48
 bool stackBear = e8 < e13 and e13 < e21 and e21 < e34 and e34 < e48
 
 var int sBull = 0
 var int sBear = 0
-sBull := stackBull ? sBull + 1 : 0
-sBear := stackBear ? sBear + 1 : 0
-
-// TimeWarp (display-only context; updates with the live higher-TF bar,
-// same as the author's original — deliberately NOT used in signal logic)
-[tw13, tw48] = request.security(syminfo.tickerid, twTF,
-     [ta.ema(close, 13), ta.ema(close, 48)],
-     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+if newSetupBar
+    sBull := stackBull ? sBull + 1 : 0
+    sBear := stackBear ? sBear + 1 : 0
 
 // ── Position state (single position, all sessions) ────────────────────────
 var int pDir = 0             // 0 flat, +1 long, -1 short
@@ -231,7 +251,8 @@ if barstate.isconfirmed
         bool hitT1 = not pT1done and (pDir > 0 ? high >= pT1 : low <= pT1)
         bool hitT2 = pT1done and not pT2done and
              (pDir > 0 ? high >= pT2 : low <= pT2)
-        bool structOut = pDir > 0 ? close < e13 : close > e13
+        bool structOut = newSetupBar and
+             (pDir > 0 ? sc < e13 : sc > e13)
         if hitProt
             // conservative: protective first when ambiguous
             pLegsR += pFrac * (pProt - pEntry) * pDir / pRisk
@@ -285,17 +306,17 @@ if barstate.isconfirmed
                      str.tostring(array.get(agR, 0), "#.#") + "R\n"
                 pDir := 0
 
-    // ---- setup state machines (only look for entries when flat) ----
+    // ---- setup state machines（只在 setup 周期的完成 K 上推进）----
     // Recovery long
-    if enRecovery
-        if recL == 0 and sBull >= stackBars and close < e13
+    if enRecovery and newSetupBar
+        if recL == 0 and sBull >= stackBars and sc < e13
             recL := 1
-            recLExt := low
+            recLExt := sl
         else if recL == 1
-            recLExt := math.min(recLExt, low)
-            if close < e34 or stackBear
+            recLExt := math.min(recLExt, sl)
+            if sc < e34 or stackBear
                 recL := 0
-            else if close > e13
+            else if sc > e13
                 if pDir == 0
                     float risk = close - recLExt
                     if risk >= minRiskPts
@@ -314,14 +335,14 @@ if barstate.isconfirmed
                         pEntryT := time_close
                 recL := 0
         // Recovery short
-        if recS == 0 and sBear >= stackBars and close > e13
+        if recS == 0 and sBear >= stackBars and sc > e13
             recS := 1
-            recSExt := high
+            recSExt := sh
         else if recS == 1
-            recSExt := math.max(recSExt, high)
-            if close > e34 or stackBull
+            recSExt := math.max(recSExt, sh)
+            if sc > e34 or stackBull
                 recS := 0
-            else if close < e13
+            else if sc < e13
                 if pDir == 0
                     float risk = recSExt - close
                     if risk >= minRiskPts
@@ -341,18 +362,18 @@ if barstate.isconfirmed
                 recS := 0
 
     // Vomy short (after bull trend)
-    if enVomy
-        if vomS == 0 and sBull[1] >= stackBars and close < e13 and close < e8
+    if enVomy and newSetupBar
+        if vomS == 0 and sBull[1] >= stackBars and sc < e13 and sc < e8
             vomS := 2
-            vomSFin := ta.highest(high, 10)
+            vomSFin := hh10
             vomSConf := false
         else if vomS == 2
-            vomSFin := math.max(vomSFin, high)
-            if close < e48
+            vomSFin := math.max(vomSFin, sh)
+            if sc < e48
                 vomSConf := true
-            if close > e13
+            if sc > e13
                 vomS := 0                      // recovered = vomy failed
-            else if high >= e13
+            else if sh >= e13
                 if pDir == 0
                     float risk = vomSFin - close
                     if risk >= minRiskPts
@@ -371,17 +392,17 @@ if barstate.isconfirmed
                         pEntryT := time_close
                         vomS := 0
         // inverse Vomy long (after bear trend)
-        if vomL == 0 and sBear[1] >= stackBars and close > e13 and close > e8
+        if vomL == 0 and sBear[1] >= stackBars and sc > e13 and sc > e8
             vomL := 2
-            vomLFin := ta.lowest(low, 10)
+            vomLFin := ll10
             vomLConf := false
         else if vomL == 2
-            vomLFin := math.min(vomLFin, low)
-            if close > e48
+            vomLFin := math.min(vomLFin, sl)
+            if sc > e48
                 vomLConf := true
-            if close < e13
+            if sc < e13
                 vomL := 0
-            else if low <= e13
+            else if sl <= e13
                 if pDir == 0
                     float risk = close - vomLFin
                     if risk >= minRiskPts
@@ -499,10 +520,6 @@ plot(showRibbon ? e21 : na, "EMA21", color=ribCol)
 plot(showRibbon ? e34 : na, "EMA34", color=ribCol)
 plot(showRibbon ? e48 : na, "EMA48", color=showRibbon ?
      color.new(color.fuchsia, 35) : na, linewidth=2)
-plot(showTimeWarp ? tw13 : na, "TW13", color=color.new(color.white, 70),
-     linewidth=3)
-plot(showTimeWarp ? tw48 : na, "TW48", color=color.new(color.fuchsia, 70),
-     linewidth=3)
 
 // ── Playbook + ledger table ───────────────────────────────────────────────
 f_fmt_led(int k) =>
@@ -518,7 +535,8 @@ var table tb = table.new(position.bottom_right, 2, 7, border_width=1,
 if barstate.islast
     float upT = f_next_rung(close, 1)
     float dnT = f_next_rung(close, -1)
-    string ctx = (stackBull ? "多头排列" : stackBear ? "空头排列" : "无排列") +
+    string ctx = "Setup " + setupTF + "m｜" +
+         (stackBull ? "多头排列" : stackBear ? "空头排列" : "无排列") +
          "｜" + (inRTH ? "RTH" : "夜盘") + "｜位置 " +
          (atrVal > 0 ? ((close - anchor) / atrVal >= 0 ? "+" : "") +
          str.tostring((close - anchor) / atrVal, "#.##") + " ATR" : "…")

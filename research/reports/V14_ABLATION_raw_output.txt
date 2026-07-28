@@ -1,0 +1,139 @@
+A1    netR    -54.4 (base -78.5) z_net -3.58 paired_t -0.48 n_pair 349 cover 0.92 z_select +nan
+A2    netR    -45.1 (base -78.5) z_net -3.57 paired_t -1.16 n_pair 265 cover 0.86 z_select +nan
+A3    netR    -50.0 (base -78.5) z_net -3.22 paired_t -2.55 n_pair 320 cover 1.00 z_select +2.84
+A4    netR    -69.9 (base -78.5) z_net -6.04 paired_t +1.17 n_pair 303 cover 0.97 z_select -2.35
+A5    netR    -44.9 (base -78.5) z_net -5.14 paired_t +0.81 n_pair 183 cover 0.98 z_select -1.56
+A6    netR    -64.7 (base -78.5) z_net -4.28 paired_t +0.00 n_pair 422 cover 1.00 z_select +1.47
+A7    netR     -7.6 (base -78.5) z_net -0.70 paired_t +0.00 n_pair 251 cover 1.00 z_select +4.19
+A8    netR    -66.7 (base -78.5) z_net -4.13 paired_t -1.23 n_pair 379 cover 1.00 z_select +0.63
+A9    netR    -33.8 (base -78.5) z_net -2.46 paired_t +0.00 n_pair 303 cover 0.96 z_select +2.34
+A10   netR    -77.7 (base -78.5) z_net -4.65 paired_t +0.00 n_pair 435 cover 0.98 z_select -0.06
+
+=== B · ES=F 10m（23h，主样本） ===
+bars=6893 setup_bars=6846
+  基线       n=462   /1000K= 67.5 grossR=   -41.7 avgR=-0.090 win=33.3% netR=   -78.5 z_geom=-1.30 z_net=-4.67 geom 249/461 exp=261.4 Q=[-22.8, -12.3, -18.7, -24.7]
+           diag={'setup_bars': 6846, 'blocked_minrisk': 5, 'blocked_inpos': 134, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 372, 'same_bar_rearm': 180, 'hyst_saved': 0, 'minhold_saved': 0}
+  A1       n=380   /1000K= 55.5 grossR=   -28.7 avgR=-0.076 win=35.3% netR=   -54.4 z_geom=-1.50 z_net=-3.58 geom 213/380 exp=226.0 Q=[-9.0, -11.0, -20.7, -13.7]
+           diag={'setup_bars': 6846, 'blocked_minrisk': 2, 'blocked_inpos': 211, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 309, 'same_bar_rearm': 62, 'hyst_saved': 0, 'minhold_saved': 0}
+  A2       n=309   /1000K= 45.1 grossR=   -25.8 avgR=-0.083 win=40.5% netR=   -45.1 z_geom=-0.75 z_net=-3.57 geom 181/309 exp=186.8 Q=[-5.0, -10.0, -19.6, -10.5]
+           diag={'setup_bars': 6846, 'blocked_minrisk': 3, 'blocked_inpos': 272, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 235, 'same_bar_rearm': 15, 'hyst_saved': 0, 'minhold_saved': 0}
+  A3       n=320   /1000K= 46.7 grossR=   -29.0 avgR=-0.091 win=38.4% netR=   -50.0 z_geom=-0.87 z_net=-3.22 geom 186/320 exp=192.8 Q=[-19.7, -8.8, -16.5, -5.0]
+           diag={'setup_bars': 6846, 'blocked_minrisk': 3, 'blocked_inpos': 287, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 236, 'same_bar_rearm': 2, 'hyst_saved': 448, 'minhold_saved': 0}
+  A4       n=311   /1000K= 45.4 grossR=   -43.6 avgR=-0.140 win=31.5% netR=   -69.9 z_geom=-1.47 z_net=-6.04 geom 164/311 exp=175.5 Q=[-21.3, -14.2, -10.1, -24.3]
+           diag={'setup_bars': 6846, 'blocked_minrisk': 1, 'blocked_inpos': 75, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 246, 'same_bar_rearm': 99, 'hyst_saved': 0, 'minhold_saved': 0}
+  A5       n=187   /1000K= 27.3 grossR=   -28.2 avgR=-0.151 win=30.5% netR=   -44.9 z_geom=-1.10 z_net=-5.14 geom 98/187 exp=104.7 Q=[-18.9, -7.1, -5.4, -13.4]
+           diag={'setup_bars': 6846, 'blocked_minrisk': 1, 'blocked_inpos': 50, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 144, 'same_bar_rearm': 50, 'hyst_saved': 0, 'minhold_saved': 0}
+  A6       n=422   /1000K= 61.6 grossR=   -33.6 avgR=-0.080 win=33.9% netR=   -64.7 z_geom=-1.15 z_net=-4.28 geom 234/422 exp=244.5 Q=[-18.6, -11.2, -15.5, -19.4]
+           diag={'setup_bars': 6846, 'blocked_minrisk': 3, 'blocked_inpos': 134, 'blocked_pullgate': 42, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 351, 'same_bar_rearm': 159, 'hyst_saved': 0, 'minhold_saved': 0}
+  A7       n=251   /1000K= 36.7 grossR=    +4.1 avgR=+0.016 win=37.1% netR=    -7.6 z_geom=-0.11 z_net=-0.70 geom 163/251 exp=163.7 Q=[-3.1, 2.8, -4.7, -2.7]
+           diag={'setup_bars': 6846, 'blocked_minrisk': 0, 'blocked_inpos': 134, 'blocked_pullgate': 216, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 235, 'same_bar_rearm': 52, 'hyst_saved': 0, 'minhold_saved': 0}
+  A8       n=380   /1000K= 55.5 grossR=   -38.5 avgR=-0.101 win=37.4% netR=   -66.7 z_geom=-1.33 z_net=-4.13 geom 210/379 exp=221.4 Q=[-19.0, -12.3, -21.2, -14.1]
+           diag={'setup_bars': 6846, 'blocked_minrisk': 4, 'blocked_inpos': 228, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 282, 'same_bar_rearm': 121, 'hyst_saved': 0, 'minhold_saved': 216}
+  A9       n=317   /1000K= 46.3 grossR=   -12.5 avgR=-0.039 win=35.0% netR=   -33.8 z_geom=+0.06 z_net=-2.46 geom 189/316 exp=188.5 Q=[-11.3, -0.8, -14.2, -7.5]
+           diag={'setup_bars': 6846, 'blocked_minrisk': 3, 'blocked_inpos': 116, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 175, 'struct_exits': 274, 'same_bar_rearm': 110, 'hyst_saved': 0, 'minhold_saved': 0}
+  A10      n=444   /1000K= 64.9 grossR=   -41.7 avgR=-0.094 win=33.1% netR=   -77.7 z_geom=-1.43 z_net=-4.65 geom 235/443 exp=248.4 Q=[-22.2, -10.8, -19.4, -25.3]
+           diag={'setup_bars': 6846, 'blocked_minrisk': 5, 'blocked_inpos': 120, 'blocked_pullgate': 0, 'blocked_fin': 27, 'blocked_cool': 0, 'struct_exits': 356, 'same_bar_rearm': 178, 'hyst_saved': 0, 'minhold_saved': 0}
+  A10a     n=361   /1000K= 52.7 grossR=   -32.7 avgR=-0.091 win=33.2% netR=   -65.2 z_geom=-0.99 z_net=-4.15 geom 187/360 exp=195.4 Q=[-15.1, -7.8, -15.2, -27.1]
+           diag={'setup_bars': 6846, 'blocked_minrisk': 5, 'blocked_inpos': 81, 'blocked_pullgate': 0, 'blocked_fin': 125, 'blocked_cool': 0, 'struct_exits': 282, 'same_bar_rearm': 166, 'hyst_saved': 0, 'minhold_saved': 0}
+  A10b     n=427   /1000K= 62.4 grossR=   -46.3 avgR=-0.109 win=31.9% netR=   -81.5 z_geom=-1.76 z_net=-4.99 geom 221/426 exp=237.1 Q=[-24.1, -10.7, -20.7, -26.0]
+           diag={'setup_bars': 6846, 'blocked_minrisk': 5, 'blocked_inpos': 100, 'blocked_pullgate': 0, 'blocked_fin': 53, 'blocked_cool': 0, 'struct_exits': 339, 'same_bar_rearm': 174, 'hyst_saved': 0, 'minhold_saved': 0}
+  组合*      n=218   /1000K= 31.8 grossR=    -2.5 avgR=-0.012 win=37.2% netR=   -12.3 z_geom=-0.26 z_net=-1.26 geom 141/218 exp=142.7 Q=[-5.8, 3.8, -6.0, -4.4]
+           diag={'setup_bars': 6846, 'blocked_minrisk': 0, 'blocked_inpos': 116, 'blocked_pullgate': 188, 'blocked_fin': 0, 'blocked_cool': 88, 'struct_exits': 206, 'same_bar_rearm': 22, 'hyst_saved': 0, 'minhold_saved': 0}
+  组合       n=212   /1000K= 31.0 grossR=    -9.7 avgR=-0.046 win=40.6% netR=   -19.4 z_geom=-0.34 z_net=-1.71 geom 137/212 exp=139.2 Q=[-7.1, -1.2, -8.3, -2.8]
+           diag={'setup_bars': 6846, 'blocked_minrisk': 0, 'blocked_inpos': 219, 'blocked_pullgate': 130, 'blocked_fin': 0, 'blocked_cool': 51, 'struct_exits': 181, 'same_bar_rearm': 2, 'hyst_saved': 301, 'minhold_saved': 0}
+=== A · ^GSPC 10m（RTH-only） ===
+bars=2340 setup_bars=2293
+  基线       n=141   /1000K= 61.5 grossR=    -9.9 avgR=-0.070 win=39.7% netR=   -17.5 z_geom=+0.58 z_net=-2.29 geom 97/141 exp=94.1 Q=[-1.2, 2.8, -5.8, -13.2]
+           diag={'setup_bars': 2293, 'blocked_minrisk': 0, 'blocked_inpos': 20, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 116, 'same_bar_rearm': 62, 'hyst_saved': 0, 'minhold_saved': 0}
+  A1       n=112   /1000K= 48.8 grossR=    +2.4 avgR=+0.021 win=45.5% netR=    -2.8 z_geom=+1.18 z_net=-0.42 geom 83/112 exp=77.7 Q=[-2.5, 6.5, -4.2, -2.6]
+           diag={'setup_bars': 2293, 'blocked_minrisk': 0, 'blocked_inpos': 57, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 93, 'same_bar_rearm': 29, 'hyst_saved': 0, 'minhold_saved': 0}
+  A2       n=76    /1000K= 33.1 grossR=    +7.2 avgR=+0.094 win=51.3% netR=    +3.4 z_geom=+1.56 z_net=+0.47 geom 59/76 exp=53.4 Q=[-2.4, 9.1, 0.8, -4.1]
+           diag={'setup_bars': 2293, 'blocked_minrisk': 0, 'blocked_inpos': 93, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 55, 'same_bar_rearm': 3, 'hyst_saved': 0, 'minhold_saved': 0}
+  A3       n=95    /1000K= 41.4 grossR=    +2.3 avgR=+0.025 win=42.1% netR=    -2.0 z_geom=+0.89 z_net=-0.26 geom 69/95 exp=65.4 Q=[0.4, 1.1, -0.8, -2.7]
+           diag={'setup_bars': 2293, 'blocked_minrisk': 0, 'blocked_inpos': 67, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 69, 'same_bar_rearm': 0, 'hyst_saved': 128, 'minhold_saved': 0}
+  A4       n=101   /1000K= 44.0 grossR=   -10.0 avgR=-0.099 win=36.6% netR=   -15.2 z_geom=-0.17 z_net=-2.43 geom 67/101 exp=67.7 Q=[2.8, -0.6, -5.9, -11.6]
+           diag={'setup_bars': 2293, 'blocked_minrisk': 0, 'blocked_inpos': 19, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 85, 'same_bar_rearm': 42, 'hyst_saved': 0, 'minhold_saved': 0}
+  A5       n=65    /1000K= 28.3 grossR=    -2.7 avgR=-0.042 win=40.0% netR=    -6.4 z_geom=+0.50 z_net=-1.22 geom 45/65 exp=43.3 Q=[2.4, -0.2, -1.8, -6.8]
+           diag={'setup_bars': 2293, 'blocked_minrisk': 0, 'blocked_inpos': 12, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 53, 'same_bar_rearm': 22, 'hyst_saved': 0, 'minhold_saved': 0}
+  A6       n=119   /1000K= 51.9 grossR=    -4.7 avgR=-0.040 win=41.2% netR=   -10.1 z_geom=+1.07 z_net=-1.73 geom 87/119 exp=82.1 Q=[-1.3, 2.3, -6.2, -4.9]
+           diag={'setup_bars': 2293, 'blocked_minrisk': 0, 'blocked_inpos': 20, 'blocked_pullgate': 22, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 105, 'same_bar_rearm': 51, 'hyst_saved': 0, 'minhold_saved': 0}
+  A7       n=91    /1000K= 39.7 grossR=    +1.5 avgR=+0.017 win=44.0% netR=    -1.3 z_geom=+0.77 z_net=-0.28 geom 70/91 exp=67.0 Q=[1.2, 1.5, -2.8, -1.2]
+           diag={'setup_bars': 2293, 'blocked_minrisk': 0, 'blocked_inpos': 20, 'blocked_pullgate': 50, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 87, 'same_bar_rearm': 34, 'hyst_saved': 0, 'minhold_saved': 0}
+  A8       n=118   /1000K= 51.5 grossR=    -6.5 avgR=-0.055 win=42.4% netR=   -12.2 z_geom=+0.17 z_net=-1.55 geom 80/118 exp=79.2 Q=[2.7, 2.1, -5.8, -11.2]
+           diag={'setup_bars': 2293, 'blocked_minrisk': 0, 'blocked_inpos': 45, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 88, 'same_bar_rearm': 39, 'hyst_saved': 0, 'minhold_saved': 65}
+  A9       n=99    /1000K= 43.2 grossR=    +3.9 avgR=+0.040 win=43.4% netR=    -0.7 z_geom=+1.54 z_net=-0.12 geom 74/99 exp=67.5 Q=[1.8, 3.2, -0.9, -4.8]
+           diag={'setup_bars': 2293, 'blocked_minrisk': 0, 'blocked_inpos': 20, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 46, 'struct_exits': 88, 'same_bar_rearm': 39, 'hyst_saved': 0, 'minhold_saved': 0}
+  A10      n=134   /1000K= 58.4 grossR=   -10.8 avgR=-0.081 win=39.6% netR=   -18.2 z_geom=+0.46 z_net=-2.42 geom 91/134 exp=88.7 Q=[-1.4, 2.8, -6.1, -13.5]
+           diag={'setup_bars': 2293, 'blocked_minrisk': 0, 'blocked_inpos': 18, 'blocked_pullgate': 0, 'blocked_fin': 8, 'blocked_cool': 0, 'struct_exits': 109, 'same_bar_rearm': 59, 'hyst_saved': 0, 'minhold_saved': 0}
+  A10a     n=109   /1000K= 47.5 grossR=   -12.2 avgR=-0.112 win=37.6% netR=   -19.0 z_geom=+0.11 z_net=-2.61 geom 70/109 exp=69.5 Q=[-2.0, 2.7, -6.4, -13.2]
+           diag={'setup_bars': 2293, 'blocked_minrisk': 0, 'blocked_inpos': 5, 'blocked_pullgate': 0, 'blocked_fin': 39, 'blocked_cool': 0, 'struct_exits': 85, 'same_bar_rearm': 57, 'hyst_saved': 0, 'minhold_saved': 0}
+  A10b     n=131   /1000K= 57.1 grossR=   -10.2 avgR=-0.078 win=39.7% netR=   -17.6 z_geom=+0.50 z_net=-2.34 geom 89/131 exp=86.6 Q=[-1.0, 2.6, -5.7, -13.5]
+           diag={'setup_bars': 2293, 'blocked_minrisk': 0, 'blocked_inpos': 18, 'blocked_pullgate': 0, 'blocked_fin': 11, 'blocked_cool': 0, 'struct_exits': 106, 'same_bar_rearm': 58, 'hyst_saved': 0, 'minhold_saved': 0}
+  组合*      n=72    /1000K= 31.4 grossR=    +5.9 avgR=+0.082 win=51.4% netR=    +3.7 z_geom=+1.10 z_net=+0.85 geom 57/72 exp=53.2 Q=[0.5, 2.9, -1.2, 1.6]
+           diag={'setup_bars': 2293, 'blocked_minrisk': 0, 'blocked_inpos': 46, 'blocked_pullgate': 36, 'blocked_fin': 0, 'blocked_cool': 16, 'struct_exits': 69, 'same_bar_rearm': 15, 'hyst_saved': 0, 'minhold_saved': 0}
+  组合       n=70    /1000K= 30.5 grossR=    +4.5 avgR=+0.065 win=44.3% netR=    +2.5 z_geom=+0.80 z_net=+0.45 geom 54/70 exp=51.2 Q=[0.2, -0.5, 0.1, 2.7]
+           diag={'setup_bars': 2293, 'blocked_minrisk': 0, 'blocked_inpos': 57, 'blocked_pullgate': 30, 'blocked_fin': 0, 'blocked_cool': 8, 'struct_exits': 62, 'same_bar_rearm': 0, 'hyst_saved': 96, 'minhold_saved': 0}
+=== C · ES=F 1h（730d） ===
+bars=13730 setup_bars=13683
+  基线       n=911   /1000K= 66.6 grossR=   -58.5 avgR=-0.064 win=35.8% netR=   -94.1 z_geom=-2.25 z_net=-4.08 geom 621/911 exp=648.6 Q=[-27.0, -21.3, -33.1, -12.7]
+           diag={'setup_bars': 13683, 'blocked_minrisk': 3, 'blocked_inpos': 225, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 733, 'same_bar_rearm': 350, 'hyst_saved': 0, 'minhold_saved': 0}
+  A1       n=750   /1000K= 54.8 grossR=   -28.9 avgR=-0.039 win=39.5% netR=   -53.5 z_geom=-1.33 z_net=-2.74 geom 544/750 exp=558.5 Q=[-21.9, -12.5, -19.9, 0.9]
+           diag={'setup_bars': 13683, 'blocked_minrisk': 0, 'blocked_inpos': 367, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 596, 'same_bar_rearm': 136, 'hyst_saved': 0, 'minhold_saved': 0}
+  A2       n=610   /1000K= 44.6 grossR=   -26.1 avgR=-0.043 win=44.1% netR=   -45.1 z_geom=-1.60 z_net=-2.58 geom 447/610 exp=462.4 Q=[-8.9, -12.2, -17.9, -6.1]
+           diag={'setup_bars': 13683, 'blocked_minrisk': 0, 'blocked_inpos': 498, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 464, 'same_bar_rearm': 42, 'hyst_saved': 0, 'minhold_saved': 0}
+  A3       n=626   /1000K= 45.8 grossR=   -29.1 avgR=-0.046 win=40.7% netR=   -49.6 z_geom=-1.83 z_net=-2.58 geom 449/626 exp=467.0 Q=[-10.8, -13.9, -23.7, -1.2]
+           diag={'setup_bars': 13683, 'blocked_minrisk': 0, 'blocked_inpos': 547, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 445, 'same_bar_rearm': 9, 'hyst_saved': 857, 'minhold_saved': 0}
+  A4       n=644   /1000K= 47.1 grossR=   -50.2 avgR=-0.078 win=33.7% netR=   -75.1 z_geom=-1.93 z_net=-3.80 geom 437/644 exp=457.0 Q=[-24.3, -13.6, -30.0, -7.2]
+           diag={'setup_bars': 13683, 'blocked_minrisk': 3, 'blocked_inpos': 148, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 521, 'same_bar_rearm': 203, 'hyst_saved': 0, 'minhold_saved': 0}
+  A5       n=420   /1000K= 30.7 grossR=   -41.5 avgR=-0.099 win=32.4% netR=   -57.4 z_geom=-1.06 z_net=-3.79 geom 290/420 exp=298.8 Q=[-18.8, -10.3, -20.3, -8.0]
+           diag={'setup_bars': 13683, 'blocked_minrisk': 2, 'blocked_inpos': 74, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 348, 'same_bar_rearm': 122, 'hyst_saved': 0, 'minhold_saved': 0}
+  A6       n=824   /1000K= 60.2 grossR=   -50.8 avgR=-0.062 win=36.8% netR=   -79.0 z_geom=-1.89 z_net=-4.18 geom 578/824 exp=599.9 Q=[-18.3, -22.2, -35.6, -2.9]
+           diag={'setup_bars': 13683, 'blocked_minrisk': 0, 'blocked_inpos': 225, 'blocked_pullgate': 90, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 687, 'same_bar_rearm': 304, 'hyst_saved': 0, 'minhold_saved': 0}
+  A7       n=719   /1000K= 52.5 grossR=   -48.0 avgR=-0.067 win=37.3% netR=   -67.4 z_geom=-3.11 z_net=-4.50 geom 515/719 exp=547.8 Q=[-12.0, -24.0, -27.5, -3.9]
+           diag={'setup_bars': 13683, 'blocked_minrisk': 0, 'blocked_inpos': 225, 'blocked_pullgate': 195, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 632, 'same_bar_rearm': 251, 'hyst_saved': 0, 'minhold_saved': 0}
+  A8       n=753   /1000K= 55.0 grossR=   -31.2 avgR=-0.041 win=41.8% netR=   -59.3 z_geom=-1.92 z_net=-2.62 geom 521/753 exp=542.2 Q=[-17.5, -13.1, -27.6, -1.0]
+           diag={'setup_bars': 13683, 'blocked_minrisk': 1, 'blocked_inpos': 416, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 550, 'same_bar_rearm': 229, 'hyst_saved': 0, 'minhold_saved': 422}
+  A9       n=639   /1000K= 46.7 grossR=   -33.9 avgR=-0.053 win=37.1% netR=   -56.2 z_geom=-2.21 z_net=-3.09 geom 448/639 exp=470.2 Q=[-19.1, -15.6, -21.2, -0.4]
+           diag={'setup_bars': 13683, 'blocked_minrisk': 1, 'blocked_inpos': 197, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 339, 'struct_exits': 539, 'same_bar_rearm': 215, 'hyst_saved': 0, 'minhold_saved': 0}
+  A10      n=853   /1000K= 62.3 grossR=   -57.3 avgR=-0.067 win=35.3% netR=   -91.8 z_geom=-1.99 z_net=-4.02 geom 577/853 exp=600.8 Q=[-24.9, -20.2, -33.5, -13.2]
+           diag={'setup_bars': 13683, 'blocked_minrisk': 3, 'blocked_inpos': 183, 'blocked_pullgate': 0, 'blocked_fin': 78, 'blocked_cool': 0, 'struct_exits': 679, 'same_bar_rearm': 334, 'hyst_saved': 0, 'minhold_saved': 0}
+  A10a     n=624   /1000K= 45.6 grossR=   -47.2 avgR=-0.076 win=34.3% netR=   -77.2 z_geom=-1.32 z_net=-3.56 geom 401/624 exp=415.1 Q=[-23.5, -11.2, -28.1, -14.3]
+           diag={'setup_bars': 13683, 'blocked_minrisk': 3, 'blocked_inpos': 47, 'blocked_pullgate': 0, 'blocked_fin': 367, 'blocked_cool': 0, 'struct_exits': 466, 'same_bar_rearm': 301, 'hyst_saved': 0, 'minhold_saved': 0}
+  A10b     n=817   /1000K= 59.7 grossR=   -55.4 avgR=-0.068 win=34.9% netR=   -89.1 z_geom=-2.35 z_net=-3.94 geom 545/817 exp=572.6 Q=[-25.8, -19.9, -30.7, -12.8]
+           diag={'setup_bars': 13683, 'blocked_minrisk': 3, 'blocked_inpos': 177, 'blocked_pullgate': 0, 'blocked_fin': 119, 'blocked_cool': 0, 'struct_exits': 646, 'same_bar_rearm': 325, 'hyst_saved': 0, 'minhold_saved': 0}
+  组合*      n=529   /1000K= 38.7 grossR=   -29.3 avgR=-0.055 win=40.3% netR=   -42.5 z_geom=-2.08 z_net=-3.35 geom 394/529 exp=412.3 Q=[-8.0, -15.6, -14.8, -4.1]
+           diag={'setup_bars': 13683, 'blocked_minrisk': 0, 'blocked_inpos': 259, 'blocked_pullgate': 140, 'blocked_fin': 0, 'blocked_cool': 246, 'struct_exits': 450, 'same_bar_rearm': 87, 'hyst_saved': 0, 'minhold_saved': 0}
+  组合       n=486   /1000K= 35.5 grossR=   -32.5 avgR=-0.067 win=40.5% netR=   -44.3 z_geom=-3.29 z_net=-3.00 geom 352/486 exp=379.7 Q=[-5.2, -15.5, -18.2, -5.5]
+           diag={'setup_bars': 13683, 'blocked_minrisk': 0, 'blocked_inpos': 462, 'blocked_pullgate': 110, 'blocked_fin': 0, 'blocked_cool': 125, 'struct_exits': 374, 'same_bar_rearm': 7, 'hyst_saved': 675, 'minhold_saved': 0}
+=== D · ^GSPC 1h（730d, RTH） ===
+bars=5089 setup_bars=5042
+  基线       n=296   /1000K= 58.7 grossR=   -17.4 avgR=-0.059 win=40.5% netR=   -24.1 z_geom=-2.36 z_net=-2.32 geom 233/295 exp=247.0 Q=[4.3, -5.2, -12.9, -10.3]
+           diag={'setup_bars': 5042, 'blocked_minrisk': 0, 'blocked_inpos': 32, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 245, 'same_bar_rearm': 122, 'hyst_saved': 0, 'minhold_saved': 0}
+  A1       n=231   /1000K= 45.8 grossR=   -16.0 avgR=-0.069 win=40.3% netR=   -20.2 z_geom=-2.97 z_net=-2.16 geom 183/230 exp=197.8 Q=[0.5, -8.5, -5.3, -6.8]
+           diag={'setup_bars': 5042, 'blocked_minrisk': 0, 'blocked_inpos': 91, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 193, 'same_bar_rearm': 42, 'hyst_saved': 0, 'minhold_saved': 0}
+  A2       n=192   /1000K= 38.1 grossR=    -9.0 avgR=-0.047 win=44.3% netR=   -12.4 z_geom=-2.68 z_net=-1.51 geom 154/191 exp=165.8 Q=[-1.2, -6.1, -2.0, -3.2]
+           diag={'setup_bars': 5042, 'blocked_minrisk': 0, 'blocked_inpos': 133, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 149, 'same_bar_rearm': 15, 'hyst_saved': 0, 'minhold_saved': 0}
+  A3       n=192   /1000K= 38.1 grossR=    -3.9 avgR=-0.020 win=47.9% netR=    -7.2 z_geom=-1.66 z_net=-0.86 geom 159/191 exp=166.3 Q=[3.6, -1.9, -6.0, -2.9]
+           diag={'setup_bars': 5042, 'blocked_minrisk': 0, 'blocked_inpos': 143, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 151, 'same_bar_rearm': 0, 'hyst_saved': 280, 'minhold_saved': 0}
+  A4       n=197   /1000K= 39.1 grossR=   -10.8 avgR=-0.055 win=40.6% netR=   -15.8 z_geom=-1.83 z_net=-1.82 geom 153/197 exp=162.1 Q=[7.6, -8.2, -7.1, -8.1]
+           diag={'setup_bars': 5042, 'blocked_minrisk': 0, 'blocked_inpos': 25, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 160, 'same_bar_rearm': 69, 'hyst_saved': 0, 'minhold_saved': 0}
+  A5       n=130   /1000K= 25.8 grossR=    -8.5 avgR=-0.066 win=41.5% netR=   -11.9 z_geom=-1.29 z_net=-1.78 geom 102/130 exp=107.2 Q=[7.2, -9.3, -6.0, -3.8]
+           diag={'setup_bars': 5042, 'blocked_minrisk': 0, 'blocked_inpos': 18, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 106, 'same_bar_rearm': 41, 'hyst_saved': 0, 'minhold_saved': 0}
+  A6       n=251   /1000K= 49.8 grossR=   -21.3 avgR=-0.085 win=38.6% netR=   -26.0 z_geom=-2.81 z_net=-2.95 geom 200/250 exp=214.7 Q=[-2.3, -3.5, -12.8, -7.4]
+           diag={'setup_bars': 5042, 'blocked_minrisk': 0, 'blocked_inpos': 32, 'blocked_pullgate': 45, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 215, 'same_bar_rearm': 93, 'hyst_saved': 0, 'minhold_saved': 0}
+  A7       n=287   /1000K= 56.9 grossR=   -19.9 avgR=-0.069 win=40.1% netR=   -25.9 z_geom=-2.43 z_net=-2.60 geom 226/286 exp=240.2 Q=[2.2, -5.8, -13.0, -9.2]
+           diag={'setup_bars': 5042, 'blocked_minrisk': 0, 'blocked_inpos': 32, 'blocked_pullgate': 9, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 241, 'same_bar_rearm': 118, 'hyst_saved': 0, 'minhold_saved': 0}
+  A8       n=235   /1000K= 46.6 grossR=    +2.5 avgR=+0.011 win=48.9% netR=    -2.5 z_geom=-1.20 z_net=-0.23 geom 191/234 exp=197.3 Q=[5.9, 0.8, -3.4, -5.9]
+           diag={'setup_bars': 5042, 'blocked_minrisk': 0, 'blocked_inpos': 103, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 0, 'struct_exits': 186, 'same_bar_rearm': 85, 'hyst_saved': 0, 'minhold_saved': 135}
+  A9       n=209   /1000K= 41.5 grossR=   -12.2 avgR=-0.058 win=38.8% netR=   -16.2 z_geom=-2.74 z_net=-2.00 geom 166/208 exp=178.9 Q=[0.7, -5.6, -8.8, -2.6]
+           diag={'setup_bars': 5042, 'blocked_minrisk': 0, 'blocked_inpos': 20, 'blocked_pullgate': 0, 'blocked_fin': 0, 'blocked_cool': 105, 'struct_exits': 178, 'same_bar_rearm': 77, 'hyst_saved': 0, 'minhold_saved': 0}
+  A10      n=270   /1000K= 53.6 grossR=   -14.4 avgR=-0.053 win=40.7% netR=   -20.7 z_geom=-1.77 z_net=-2.04 geom 213/269 exp=223.2 Q=[4.6, -4.0, -11.3, -10.1]
+           diag={'setup_bars': 5042, 'blocked_minrisk': 0, 'blocked_inpos': 31, 'blocked_pullgate': 0, 'blocked_fin': 27, 'blocked_cool': 0, 'struct_exits': 220, 'same_bar_rearm': 118, 'hyst_saved': 0, 'minhold_saved': 0}
+  A10a     n=191   /1000K= 37.9 grossR=    -9.1 avgR=-0.048 win=42.9% netR=   -14.4 z_geom=-1.11 z_net=-1.50 geom 146/190 exp=151.8 Q=[6.0, -3.1, -8.3, -9.0]
+           diag={'setup_bars': 5042, 'blocked_minrisk': 0, 'blocked_inpos': 2, 'blocked_pullgate': 0, 'blocked_fin': 121, 'blocked_cool': 0, 'struct_exits': 147, 'same_bar_rearm': 106, 'hyst_saved': 0, 'minhold_saved': 0}
+  A10b     n=262   /1000K= 52.0 grossR=   -14.1 avgR=-0.054 win=40.5% netR=   -20.4 z_geom=-1.94 z_net=-2.01 geom 205/261 exp=216.1 Q=[4.9, -4.3, -11.0, -10.0]
+           diag={'setup_bars': 5042, 'blocked_minrisk': 0, 'blocked_inpos': 31, 'blocked_pullgate': 0, 'blocked_fin': 35, 'blocked_cool': 0, 'struct_exits': 213, 'same_bar_rearm': 116, 'hyst_saved': 0, 'minhold_saved': 0}
+  组合*      n=190   /1000K= 37.7 grossR=    -7.3 avgR=-0.038 win=42.6% netR=   -10.7 z_geom=-2.57 z_net=-1.29 geom 152/189 exp=163.4 Q=[-1.9, -2.1, -3.5, -3.2]
+           diag={'setup_bars': 5042, 'blocked_minrisk': 0, 'blocked_inpos': 81, 'blocked_pullgate': 1, 'blocked_fin': 0, 'blocked_cool': 60, 'struct_exits': 159, 'same_bar_rearm': 36, 'hyst_saved': 0, 'minhold_saved': 0}
+  组合       n=173   /1000K= 34.3 grossR=    -2.9 avgR=-0.017 win=48.6% netR=    -5.9 z_geom=-1.65 z_net=-0.76 geom 143/172 exp=149.9 Q=[3.9, -2.0, -6.0, -1.9]
+           diag={'setup_bars': 5042, 'blocked_minrisk': 0, 'blocked_inpos': 123, 'blocked_pullgate': 3, 'blocked_fin': 0, 'blocked_cool': 41, 'struct_exits': 135, 'same_bar_rearm': 0, 'hyst_saved': 256, 'minhold_saved': 0}
