@@ -49,7 +49,7 @@
 indicator("IDM v15", "IDM v15", overlay=true,
      max_lines_count=200, max_labels_count=300)
 
-const string VERSION_ID = "15.2.0-theta-clock"
+const string VERSION_ID = "15.3.0-vix1d-implied"
 
 // ═══ 2026-07-28 补记：与 Saty 当日实盘的逐条对账（这是 v15.1 的全部理由）═══
 //
@@ -248,11 +248,36 @@ int maxHoldBars = input.int(9, "最大持仓（setup K 根数）", minval=1, gro
 bool useHardStopTime = input.bool(true, "收盘前强制平仓", group=G_THETA)
 int flatBeforeMin = input.int(30, "收盘前多少分钟平掉（ET）", minval=5,
      group=G_THETA, tooltip="0DTE 最后半小时 theta 与 gamma 同时失控，不持仓。")
-float impliedMovePts = input.float(0.0, "今日 0DTE 隐含波动（点，0=未填）",
+// —— 隐含波动来源：VIX1D 自动 / 手填覆盖 ————————————————————————————
+//
+// 为什么不用 Unusual Whales API：它是与平台分开的付费订阅（$150/月，
+// 年付 $125/月；一周免费试用会自动转付费）。用户现有的平台账号【不含】API。
+// 所以这里改用 CBOE:VIX1D —— TradingView 免费就有，概念上正是 0DTE 隐含波动。
+//
+// ⚠⚠ 校准系数是【一天的观测】，必须当成待验证的量，不要当常数用。
+//     2026-07-28 12:26 ET，SPX 7437.8，距收盘 214 分钟：
+//        UW 实际隐含（=ATM 跨式 × ~0.875）  = 17.51 点
+//        VIX1D = 12.56，朴素推算
+//          spot × VIX1D/100 / sqrt(252) × sqrt(214/390) = 43.59 点
+//        → 校准系数 = 17.51 / 43.59 = 0.402
+//     可能的原因：VIX1D 按 24 小时日历日年化而非 6.5 小时交易时段
+//     （sqrt(24/6.5) = 1.92），外加盘中换约。**但这是 n=1。**
+//
+//     本项目栽过一模一样的跟头：用两天的 ^GSPC/CFD ATR 比值当常数，
+//     246 天一测 mean 1.117 / sd 0.083 / 范围 0.826–1.418，直接崩掉。
+//     所以 vix1dCalib 是一个【公开的、可调的、待收集数据校准的】参数，
+//     并且每根 K 都把 VIX1D 与推算值送进数据窗，方便逐日记录。
+float impliedMovePts = input.float(0.0, "手填今日隐含波动（点）｜0 = 用 VIX1D",
      step=0.01, group=G_THETA,
-     tooltip="从 Unusual Whales 的 SPXW 0DTE 到期标签读，例如 2026-07-28 是 ±17.51。" +
-         "填了之后面板会告诉你：**目标是不是设在市场认为今天走不到的地方。**" +
-         "07-28 的实况是——0.236 档就已经是隐含的 119%，全部档位都在隐含之外。")
+     tooltip="填了就覆盖 VIX1D 推算。UW 的 SPXW 0DTE 到期标签直接给这个数。")
+bool useVix1d = input.bool(true, "用 CBOE:VIX1D 自动推算", group=G_THETA)
+float vix1dCalib = input.float(0.402, "VIX1D 校准系数【n=1，待验证】", step=0.001,
+     minval=0.05, maxval=2.0, group=G_THETA,
+     tooltip="2026-07-28 单日标定：UW 17.51 / VIX1D 朴素推算 43.59 = 0.402。" +
+         "**一天的数据不足以确定它。** 面板会同时显示 VIX1D 与推算值，" +
+         "请逐日和 UW 的数字对一次，攒够 20 天再定。在那之前把它当粗略参考。")
+
+// （VIX1D 推算块下移到 minsToClose 定义之后 —— Pine 要求先定义后用）
 
 // ── 07 偏向（软参考，永不阻止入场）───────────────────────────────────────
 string G_BIAS = "07 · 偏向（只显示与分组，不当闸门）"
@@ -337,6 +362,18 @@ f_mins_to_close() =>
         m := (16 - hh) * 60 - mm
     m
 float minsToClose = f_mins_to_close()
+
+float vix1d = useVix1d ? request.security("CBOE:VIX1D", "D", close,
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on) : na
+// 全天（自开盘起）1σ 期望幅度，再按剩余时间开方缩放
+float emFull = na(vix1d) ? na :
+     close * (vix1d / 100.0) / math.sqrt(252.0) * vix1dCalib
+float emNow = na(emFull) ? na :
+     na(minsToClose) ? emFull : emFull * math.sqrt(math.max(minsToClose, 1) / 390.0)
+// 手填优先；否则用 VIX1D 推算
+float impliedNow = impliedMovePts > 0 ? impliedMovePts : emNow
+string impliedSrc = impliedMovePts > 0 ? "手填" :
+     na(emNow) ? "无" : "VIX1D " + str.tostring(vix1d, "#.##") + "【n=1校准】"
 
 // ── 具名位全集（ATR 梯 + 时段位）─────────────────────────────────────────
 // 「具名位」= 他会在帖子里点名的那种位。ATR 梯是一组，夜盘/盘前/前日高低是另一组
@@ -798,14 +835,15 @@ if barstate.islast
                   "距收盘 " + str.tostring(minsToClose, "#") + " 分" +
                   (pDir != 0 ? "｜已持 " + str.tostring(pBars) + "/" +
                        str.tostring(maxHoldBars) + " 根" : "")) +
-             (impliedMovePts > 0 ?
-                  "｜T1 距 " + str.tostring(t1dist, "#.#") + " 点 = 隐含的 " +
-                       str.tostring(t1dist / impliedMovePts * 100, "#") + "%" +
-                       (t1dist > impliedMovePts ? " ⚠超出" : " ✓") :
-                  "｜隐含波动未填（06b）"),
+             (not na(impliedNow) and impliedNow > 0 ?
+                  "｜隐含 ±" + str.tostring(impliedNow, "#.#") + " (" + impliedSrc +
+                       ")｜T1 距 " + str.tostring(t1dist, "#.#") + " 点 = " +
+                       str.tostring(t1dist / impliedNow * 100, "#") + "%" +
+                       (t1dist > impliedNow ? " ⚠超出隐含" : " ✓在隐含内") :
+                  "｜隐含波动不可得（06b）"),
              text_color=(not na(minsToClose) and minsToClose <= flatBeforeMin) ?
                   color.red :
-                  (impliedMovePts > 0 and t1dist > impliedMovePts) ?
+                  (not na(impliedNow) and impliedNow > 0 and t1dist > impliedNow) ?
                        color.orange : color.white,
              text_size=size.small)
         table.cell(tb, 0, 3, "最近的位", text_color=color.silver,
@@ -845,3 +883,7 @@ plot(anchor, "audit: anchor", color=na, display=display.data_window)
 plot(atrVal, "audit: atr", color=na, display=display.data_window)
 plot(phase, "audit: phase", color=na, display=display.data_window)
 plot(touchN, "audit: touch count", color=na, display=display.data_window)
+plot(vix1d, "audit: VIX1D", color=na, display=display.data_window)
+plot(emFull, "audit: EM full day", color=na, display=display.data_window)
+plot(impliedNow, "audit: EM remaining", color=na, display=display.data_window)
+plot(minsToClose, "audit: mins to close", color=na, display=display.data_window)
