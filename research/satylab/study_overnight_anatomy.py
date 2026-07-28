@@ -334,6 +334,15 @@ def main() -> None:
             continue
         live_bars.append((b, lv[1]))
 
+    # 分段已实现 ATR（夜盘段 / RTH 段），第 2.3b 与第 3.2 节都要用
+    on_key, rth_key, rth_days = build_block_keys(bars)
+    atr_on, meta_on = segment_atr(bars, on_key)
+    atr_rth, meta_rth = segment_atr(bars, rth_key)
+    ratios_on = [atr_on[k] / book.get(k)[1] for k in sorted(atr_on)
+                 if atr_on[k] and book.get(k)]
+    ratios_rth = [atr_rth[k] / book.get(k)[1] for k in sorted(atr_rth)
+                  if atr_rth[k] and book.get(k)]
+
     # 括号 + 孤立重放 + MFE/MAE
     races: dict[int, Race] = {}
     for s in sigs:
@@ -530,8 +539,8 @@ def main() -> None:
     A(f"**夜盘 10m K 的振幅中位只有 RTH 的 "
       f"{100*st.median(v_on)/st.median(v_rth):.0f}%"
       f"（{st.median(v_on):.4f} vs {st.median(v_rth):.4f} 日ATR）。"
-      f"最静的 {quiet} 只有 RTH 的 {100*rng[quiet]/ref:.0f}%，"
-      f"最活的 {max(ON_BUCKETS, key=lambda b: rng.get(b,0))} 也只有 "
+      f"最静的「{quiet}」只有 RTH 的 {100*rng[quiet]/ref:.0f}%，"
+      f"最活的「{max(ON_BUCKETS, key=lambda b: rng.get(b,0))}」也只有 "
       f"{100*max(rng[b] for b in ON_BUCKETS)/ref:.0f}%。**"
       f"位阶梯的步长完全没有跟着变——它是日 ATR 的固定倍数。")
     A("")
@@ -617,13 +626,28 @@ def main() -> None:
           f"{100*(obs-null):+.1f} | {z:+.2f} | {1/null:.2f} | "
           f"{st.mean(brs):+.3f} | {st.mean(bnet):+.3f} |")
     A("")
-    A(f"RTH 超额 {100*(bR['obs']-bR['null']):+.1f} pp × 放大 {1/bR['null']:.2f} ≈ "
-      f"{(bR['obs']-bR['null'])/bR['null']:+.3f} R/笔；"
-      f"夜盘 {100*(bO['obs']-bO['null']):+.1f} pp × 放大 {1/bO['null']:.2f} ≈ "
-      f"{(bO['obs']-bO['null'])/bO['null']:+.3f} R/笔。")
+    predR = (bR['obs'] - bR['null']) / bR['null']
+    predO = (bO['obs'] - bO['null']) / bO['null']
+    measR = st.mean([bracket_r(races[id(s)], s.risk)
+                     for s in RTH if s.hit is not None])
+    measO = st.mean([bracket_r(races[id(s)], s.risk)
+                     for s in ON if s.hit is not None])
+    A(f"RTH 超额 {100*(bR['obs']-bR['null']):+.1f} pp × 放大 {1/bR['null']:.2f} = "
+      f"{predR:+.3f} R/笔；"
+      f"夜盘 {100*(bO['obs']-bO['null']):+.1f} pp × 放大 {1/bO['null']:.2f} = "
+      f"{predO:+.3f} R/笔。")
     A("")
     A("**所以「每笔更差」本身也是两个因子的乘积：缺口更大（−6.2 vs +3.0 pp）"
       "× 每 pp 更贵（1.84 vs 1.50）。尺度错配同时把这两个因子都推坏了。**")
+    A("")
+    A(f"**这个恒等式只在逐笔上成立，聚合之后有缺口，而缺口本身是信息。** "
+      f"用组内平均的 P 去套公式得 RTH {predR:+.3f} / 夜盘 {predO:+.3f}，"
+      f"实测（上表）却是 {measR:+.3f} / {measO:+.3f}。"
+      f"夜盘实测比公式差 {measO-predO:+.3f}R，RTH 差 {measR-predR:+.3f}R——"
+      f"因为 P 逐笔不同，聚合时 E[(p−P)/P] ≠ (E[p]−E[P])/E[P]，"
+      f"两者的差取决于**缺口与 T/S 之间的相关**。夜盘的缺口不是均匀摊在各笔上的，"
+      f"而是**集中在 T/S 大（目标远）的那些笔**上——这正是 3.2b 那条斜坡，"
+      f"这里先记一笔，到 3.2b 再把它扫出来。")
     A("")
 
     # ── 2.3 时长 ────────────────────────────────────────────────────────────
@@ -684,8 +708,55 @@ def main() -> None:
       "位阶梯目标是位移刻度的量（∝ 整段波幅）——效率越低，(止损, 目标) 这一对"
       "就越不成比例。**")
     A("")
-    return_marker = None
-    return return_marker  # placeholder replaced below
+    A("| 段类型 | 块数 | 中位段波幅/日ATR | 中位段内K数 | 中位Σ逐根振幅/日ATR | "
+      "**路径效率** |")
+    A("|---|---|---|---|---|---|")
+    eff = {}
+    for lbl, meta in (("夜盘段 16:00→09:30", meta_on), ("RTH 段 09:30→16:00", meta_rth)):
+        ks = [k for k in sorted(meta) if book.get(k)]
+        trn = [meta[k]["tr"] / book.get(k)[1] for k in ks]
+        srn = [meta[k]["sum_range"] / book.get(k)[1] for k in ks]
+        ef = [meta[k]["tr"] / meta[k]["sum_range"] for k in ks
+              if meta[k]["sum_range"] > 0]
+        eff[lbl] = st.median(ef)
+        bump()
+        A(f"| {lbl} | {len(ks)} | {st.median(trn):.3f} | "
+          f"{st.median([meta[k]['bars'] for k in ks]):.0f} | "
+          f"{st.median(srn):.3f} | **{st.median(ef):.3f}** |")
+    A("")
+    e_on = eff["夜盘段 16:00→09:30"]
+    e_rth = eff["RTH 段 09:30→16:00"]
+    A(f"**夜盘每走 1 单位的 K 振幅只换来 {e_on:.3f} 的净位移，RTH 是 "
+      f"{e_rth:.3f}——夜盘的路径效率只有 RTH 的 {e_on/e_rth:.0%}。**")
+    A("")
+    tr_on = st.median([meta_on[k]["tr"] / book.get(k)[1]
+                       for k in sorted(meta_on) if book.get(k)])
+    tr_rth = st.median([meta_rth[k]["tr"] / book.get(k)[1]
+                        for k in sorted(meta_rth) if book.get(k)])
+    r_seg = tr_on / tr_rth
+    r_bar = st.median(v_on) / st.median(v_rth)
+    r_stop = st.median(S_o) / st.median(S_r)
+    A(f"这一条改写了整个诊断。夜盘的问题**不是「波动小」**——整段净波幅是日 ATR 的 "
+      f"{tr_on:.2f} 倍，比 RTH 那 6.5 小时的 {tr_rth:.2f} 倍只低 "
+      f"{100*(1-r_seg):.0f}%，而它的逐根 K 只有 RTH 的一半。"
+      f"夜盘的问题是**同样的净位移要用多得多的来回去换**，"
+      f"而止损买单的正是那些来回。所以：")
+    A("")
+    A(f"- 止损 ∝ 逐根噪声 → 夜盘缩到 RTH 的 **{r_stop:.2f} 倍**"
+      f"（2.2 实测；逐根振幅比是 {r_bar:.2f}，两者相同）")
+    A(f"- 目标 ∝ 整段位移 → 夜盘只缩到 RTH 的 **{r_seg:.2f} 倍**"
+      f"（{tr_on:.3f}/{tr_rth:.3f}；用 Wilder 平滑后的段 ATR 算是 "
+      f"{st.median(ratios_on)/st.median(ratios_rth):.2f}，见 3.2，两种算法一致）")
+    A(f"- 于是 T/S 被放大 **≈{r_seg/r_stop:.1f} 倍**——2.2 直接实测的是 "
+      f"{st.median([abs(s.t1-s.entry)/s.risk for s in ON]):.2f}/"
+      f"{st.median([abs(s.t1-s.entry)/s.risk for s in RTH]):.2f} = "
+      f"{st.median([abs(s.t1-s.entry)/s.risk for s in ON])/st.median([abs(s.t1-s.entry)/s.risk for s in RTH]):.1f} 倍。"
+      f"（中位数不可乘，两个数只在量级与方向上相互印证，不是恒等式。）")
+    A("")
+    A(f"**这就是为什么 3.2 那个「把目标按夜盘实际波动缩放」的反事实会失败："
+      f"它缩的是整段位移刻度（只需缩 {100*(1-r_seg):.0f}%），"
+      f"而需要缩的是逐根噪声刻度（缩了 {100*(1-r_stop):.0f}%）。**")
+    A("")
 
     # ── 2.4 点差 ────────────────────────────────────────────────────────────
     A("### 2.4 0.6 点点差为什么在夜盘更贵")
@@ -867,6 +938,53 @@ def main() -> None:
     A(f"全样本（RTH 未动）：{len(sigs)} → {len(sigs_b)} 笔，总净R "
       f"{bA['tot']:+.1f} → {sum(s.net for s in sigs_b):+.1f}。")
     A("")
+    A("#### 3.1b 时钟还是止损宽度？—— 2×2 交叉")
+    A("")
+    A("如果亏损真的是「夜盘」的属性，那么在窄止损这一格里 RTH 应该明显比夜盘好。"
+      "如果亏损其实是「止损太窄」的属性，那么两个时段在同一格里应该差不多，"
+      "夜盘只是**窄止损占比高**而已。")
+    A("")
+    A("| 格子 | n | 占本时段 | 几何零假设 | 命中 | 超额pp | z_geom | 均净R | 总净R |")
+    A("|---|---|---|---|---|---|---|---|---|")
+    for slbl, sg in (("RTH", RTH), ("夜盘", ON)):
+        for wlbl, wf in ((f"S < {GATE} ATR（窄）", lambda s: s.d4 < GATE),
+                         (f"S ≥ {GATE} ATR（宽）", lambda s: s.d4 >= GATE)):
+            g = [s for s in sg if wf(s)]
+            if not g:
+                continue
+            bump()
+            res = [s for s in g if s.hit is not None]
+            z, n, obs, null = z_geom([s.hit for s in res],
+                                     [s.pnull for s in res])
+            A(f"| {slbl} · {wlbl} | {len(g)} | {100*len(g)/len(sg):.0f}% | "
+              f"{100*null:.1f}% | {100*obs:.1f}% | {100*(obs-null):+.1f} | "
+              f"{z:+.2f} | {st.mean([s.net for s in g]):+.3f} | "
+              f"{sum(s.net for s in g):+.1f} |")
+    A("")
+    nr_narrow = [s.net for s in RTH if s.d4 < GATE]
+    no_narrow = [s.net for s in ON if s.d4 < GATE]
+    nr_wide = [s.net for s in RTH if s.d4 >= GATE]
+    no_wide = [s.net for s in ON if s.d4 >= GATE]
+    A("两个效应的方向对比：")
+    A("")
+    A(f"- **止损宽窄的效应，两个时段同号且都很大**：RTH 窄−宽 = "
+      f"{st.mean(nr_narrow)-st.mean(nr_wide):+.3f}，"
+      f"夜盘 窄−宽 = {st.mean(no_narrow)-st.mean(no_wide):+.3f}。")
+    A(f"- **时段的效应，在两格里符号相反**：窄止损格里夜盘反而**比 RTH 好** "
+      f"（{st.mean(no_narrow):+.3f} vs {st.mean(nr_narrow):+.3f}，"
+      f"差 {st.mean(no_narrow)-st.mean(nr_narrow):+.3f}），"
+      f"宽止损格里夜盘差 "
+      f"（{st.mean(no_wide):+.3f} vs {st.mean(nr_wide):+.3f}，"
+      f"差 {st.mean(no_wide)-st.mean(nr_wide):+.3f}）。")
+    A("")
+    A(f"**判决：止损宽度是同号、稳定、跨时段一致的效应；时段本身不是——"
+      f"它在两格里换了符号。** "
+      f"最差的一格根本不是夜盘窄止损（{st.mean(no_narrow):+.3f}），"
+      f"是 **RTH 窄止损**（{st.mean(nr_narrow):+.3f}，n={len(nr_narrow)}）。"
+      f"「夜盘」这个标签真正携带的全部信息是**窄止损占比**："
+      f"夜盘 {100*len(no_narrow)/len(ON):.0f}% vs RTH "
+      f"{100*len(nr_narrow)/len(RTH):.0f}%。它是窄止损的富集区，不是独立病因。")
+    A("")
 
     # ── 3.2 目标按夜盘实际波动缩放 ─────────────────────────────────────────
     A("### 3.2 把目标改成「夜盘段已实现 ATR」的 0.236")
@@ -878,20 +996,12 @@ def main() -> None:
       "取段高/段低/段收，TR = max(H−L, |H−前段收|, |L−前段收|)，Wilder(14) 平滑，"
       "**取上一段收盘时的值**，所以段内任何一根 K 用它都没有前视。RTH 段同理。")
     A("")
-    on_key, rth_key, rth_days = build_block_keys(bars)
-    atr_on, n_on_blocks = segment_atr(bars, on_key)
-    atr_rth, n_rth_blocks = segment_atr(bars, rth_key)
-
     def seg_atr_of(s: Sig) -> float | None:
         b = bars[s.i]
         if s.in_rth:
             return atr_rth.get(rth_key(b))
         return atr_on.get(on_key(b))
 
-    ratios_on = [atr_on[k] / book.get(k)[1] for k in sorted(atr_on)
-                 if atr_on[k] and book.get(k)]
-    ratios_rth = [atr_rth[k] / book.get(k)[1] for k in sorted(atr_rth)
-                  if atr_rth[k] and book.get(k)]
     A("| 段类型 | 块数 | 段ATR/日ATR 中位 | 均值 | p25 | p75 |")
     A("|---|---|---|---|---|---|")
     A(f"| 夜盘段 | {len(ratios_on)} | {st.median(ratios_on):.3f} | "
@@ -906,22 +1016,32 @@ def main() -> None:
       f"{st.median(ratios_on):.2f} 倍，而 RTH 那 6.5 小时是 "
       f"{st.median(ratios_rth):.2f} 倍。** 位阶梯给两者用的是同一把尺子。")
     A("")
-    A("三个目标口径在**同一批信号**上对跑（要求段 ATR 已成熟，故样本略小于 517）：")
+    A("六个目标口径在**同一批信号**上对跑（要求段 ATR 已成熟，故样本略小于 517）。"
+      "前四个是「换刻度」，后两个是「直接锁死 T/S」，用来把「几何变好」和"
+      "「入场本身有没有边」彻底分开：")
     A("")
+    elig = [s for s in sigs if seg_atr_of(s)]
+    k_rth = st.median([abs(s.t1 - s.entry) / s.risk
+                       for s in elig if s.in_rth])
+    variants = [
+        ("A · v14 位阶梯 / 日ATR（现状）", lambda s, a: s.t1),
+        ("D · v14 位阶梯 / **段ATR**", lambda s, a: next_rung(
+            s.entry, s.direction, book.get(trade_day(bars[s.i]))[0], a)),
+        ("B · 固定 0.236 × 日ATR", lambda s, a: s.entry + s.direction * 0.236 * s.atr),
+        ("C · 固定 0.236 × **段ATR**", lambda s, a: s.entry + s.direction * 0.236 * a),
+        (f"E · T = {k_rth:.2f}×S（T/S 锁到 RTH 中位）",
+         lambda s, a: s.entry + s.direction * k_rth * s.risk),
+        ("F · T = 1.00×S（1R 目标，零假设锁 50%）",
+         lambda s, a: s.entry + s.direction * s.risk),
+    ]
     A("| 目标口径 | 组 | n(可裁决) | T/ATR 中位 | T/S 中位 | 几何零假设 | 命中 | "
       "超额pp | z_geom | 均括号R | 均括号净R |")
     A("|---|---|---|---|---|---|---|---|---|---|---|")
-    variants = [
-        ("A · v14 位阶梯（现状）", lambda s, a: s.t1),
-        ("B · 固定 0.236 × 日ATR", lambda s, a: s.entry + s.direction * 0.236 * s.atr),
-        ("C · 固定 0.236 × 段ATR", lambda s, a: s.entry + s.direction * 0.236 * a),
-    ]
-    elig = [s for s in sigs if seg_atr_of(s)]
     cf_rows = {}
     for vlbl, tf in variants:
         for glbl, gg in (("RTH", [s for s in elig if s.in_rth]),
                          ("夜盘", [s for s in elig if not s.in_rth])):
-            rs_, ps_, hs_, brs_, bns_, tds_, tss_ = [], [], [], [], [], [], []
+            ps_, hs_, brs_, bns_, tds_, tss_ = [], [], [], [], [], []
             for s in gg:
                 a = seg_atr_of(s)
                 tgt = tf(s, a)
@@ -938,22 +1058,185 @@ def main() -> None:
                 bns_.append(br - SPREAD / s.risk)
             z, n, obs, null = z_geom(hs_, ps_)
             bump()
-            cf_rows[(vlbl, glbl)] = (z, n, obs, null, st.mean(brs_),
-                                     st.mean(bns_))
+            cf_rows[(vlbl[0], glbl)] = {"z": z, "n": n, "obs": obs, "null": null,
+                                        "br": st.mean(brs_), "bn": st.mean(bns_),
+                                        "ts": st.median(tss_)}
             A(f"| {vlbl} | {glbl} | {n} | {st.median(tds_):.4f} | "
               f"{st.median(tss_):.2f} | {100*null:.1f}% | {100*obs:.1f}% | "
               f"{100*(obs-null):+.1f} | {z:+.2f} | {st.mean(brs_):+.3f} | "
               f"{st.mean(bns_):+.3f} |")
     A("")
-    zA = cf_rows[("A · v14 位阶梯（现状）", "夜盘")]
-    zC = cf_rows[("C · 固定 0.236 × 段ATR", "夜盘")]
-    A(f"**判决**：把夜盘目标从日 ATR 刻度换成夜盘段刻度，几何零假设从 "
-      f"{100*zA[3]:.1f}% 升到 {100*zC[3]:.1f}%（目标近了，路好走了），"
-      f"实际命中从 {100*zA[2]:.1f}% 升到 {100*zC[2]:.1f}%，"
-      f"超额从 {100*(zA[2]-zA[3]):+.1f} pp 变成 {100*(zC[2]-zC[3]):+.1f} pp，"
-      f"z_geom 从 {zA[0]:+.2f} 变成 {zC[0]:+.2f}，"
-      f"均括号R 从 {zA[4]:+.3f} 变成 {zC[4]:+.3f}"
-      f"（净 {zA[5]:+.3f} → {zC[5]:+.3f}）。")
+    a_, d_, b_, c_, e_, f_ = (cf_rows[(x, "夜盘")] for x in "ADBCEF")
+    A("**读法（每一对只变一件事）：**")
+    A("")
+    A(f"1. **A → D（位阶梯只换刻度，其余全同）**：几何零假设 "
+      f"{100*a_['null']:.1f}% → {100*d_['null']:.1f}%，命中 "
+      f"{100*a_['obs']:.1f}% → {100*d_['obs']:.1f}%，超额 "
+      f"{100*(a_['obs']-a_['null']):+.1f} → "
+      f"{100*(d_['obs']-d_['null']):+.1f} pp，z_geom {a_['z']:+.2f} → {d_['z']:+.2f}，"
+      f"均括号R {a_['br']:+.3f} → {d_['br']:+.3f}（净 {a_['bn']:+.3f} → "
+      f"{d_['bn']:+.3f}）。**这个改动有效，而且效果不小。** "
+      f"同一改动加在 RTH 上：超额 "
+      f"{100*(cf_rows[('A','RTH')]['obs']-cf_rows[('A','RTH')]['null']):+.1f} → "
+      f"{100*(cf_rows[('D','RTH')]['obs']-cf_rows[('D','RTH')]['null']):+.1f} pp"
+      f"（RTH 段 ATR 本来就接近日 ATR，所以基本没动，符合预期）。")
+    A(f"2. **B → C（固定 0.236 步长换刻度，最贴用户原话的口径）**："
+      f"几何零假设 {100*b_['null']:.1f}% → {100*c_['null']:.1f}%"
+      f"（目标确实近了），命中 {100*b_['obs']:.1f}% → {100*c_['obs']:.1f}%，"
+      f"但超额 {100*(b_['obs']-b_['null']):+.1f} → "
+      f"{100*(c_['obs']-c_['null']):+.1f} pp，z_geom {b_['z']:+.2f} → {c_['z']:+.2f}，"
+      f"均括号R {b_['br']:+.3f} → {c_['br']:+.3f}。"
+      f"**几何变好了，相对几何的表现反而更差。** "
+      f"B/C 都是把目标推到 2 倍风险之外的口径，见下面的扫描：那个区域夜盘"
+      f"根本走不到。")
+    A(f"3. **E（T/S 直接锁到 RTH 中位 {k_rth:.2f}R）**：几何零假设两边并排在 "
+      f"{100*e_['null']:.1f}%，夜盘命中 {100*e_['obs']:.1f}%，"
+      f"超额 **{100*(e_['obs']-e_['null']):+.1f} pp**（z={e_['z']:+.2f}），"
+      f"均括号R **{e_['br']:+.3f}**。"
+      f"**在同样的几何下，夜盘不但不差，还略好于 RTH 的同口径"
+      f"（{100*(cf_rows[('E','RTH')]['obs']-cf_rows[('E','RTH')]['null']):+.1f} pp / "
+      f"{cf_rows[('E','RTH')]['br']:+.3f}）。**")
+    A(f"4. **F（1R 目标，零假设锁死 50%）**：夜盘超额 "
+      f"{100*(f_['obs']-f_['null']):+.1f} pp（z={f_['z']:+.2f}），RTH "
+      f"{100*(cf_rows[('F','RTH')]['obs']-cf_rows[('F','RTH')]['null']):+.1f} pp"
+      f"（z={cf_rows[('F','RTH')]['z']:+.2f}）。")
+    A("")
+    A("六个口径的夜盘超额按 T/S 排一下（A 0.85 / B 2.40 / C 1.92 / D 0.71 / "
+      "E 0.45 / F 1.00），会看到一条明显的斜坡。既然看见了斜坡，就得把它扫出来。")
+    A("")
+
+    # ── 3.2b 目标距离扫描 ───────────────────────────────────────────────────
+    A("### 3.2b 目标距离扫描：夜盘能被要求走多远")
+    A("")
+    A("把目标定成风险距离的固定倍数 T = k·S，k 从 0.25 扫到 3.0。这样"
+      "**几何零假设被锁死成 1/(1+k)，两个时段用的是同一把尺**，"
+      "超额就是纯粹的「路好不好走」。")
+    A("")
+    A("| k = T/S | 几何零假设 1/(1+k) | RTH n | RTH 命中 | RTH 超额pp | RTH z | "
+      "RTH 均括号R | RTH 净 | 夜盘 n | 夜盘 命中 | 夜盘 超额pp | 夜盘 z | "
+      "夜盘 均括号R | 夜盘 净 |")
+    A("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    sweep = {}
+    for k in (0.25, 0.4, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0):
+        row = [f"| {k:.2f} | {100/(1+k):.1f}% "]
+        for glbl, gg in (("RTH", RTH), ("夜盘", ON)):
+            hs_, ps_, brs_, bns_ = [], [], [], []
+            for s in gg:
+                tgt = s.entry + s.direction * k * s.risk
+                rc = race(s.entry, s.prot, s.risk, tgt, s.direction, s.i,
+                          bars, subs)
+                if rc.hit is None:
+                    continue
+                hs_.append(rc.hit)
+                ps_.append(rc.pnull)
+                br = k if rc.hit else -1.0
+                brs_.append(br)
+                bns_.append(br - SPREAD / s.risk)
+            z, n, obs, null = z_geom(hs_, ps_)
+            sweep[(k, glbl)] = {"obs": obs, "null": null, "z": z,
+                                "br": st.mean(brs_), "bn": st.mean(bns_), "n": n}
+            bump()
+            row.append(f"| {n} | {100*obs:.1f}% | {100*(obs-null):+.1f} | "
+                       f"{z:+.2f} | {st.mean(brs_):+.3f} | {st.mean(bns_):+.3f} ")
+        A("".join(row) + "|")
+    A("")
+    A(f"（同一批交易在每个 k 上重跑，所以**各行高度相关，不能当作独立检验**，"
+      f"这里报的是形状不是 8 个独立 p 值。5m 分辨率下无法裁决而被剔除的笔数"
+      f"全程只在 {min(sweep[(k,'夜盘')]['n'] for k in (0.25,0.4,0.5,0.75,1.0,1.5,2.0,3.0))}–"
+      f"{max(sweep[(k,'夜盘')]['n'] for k in (0.25,0.4,0.5,0.75,1.0,1.5,2.0,3.0))} "
+      f"之间摆动，不构成选择偏差。k=0.25 与 k=0.40/0.50 的差别在 n≈370 上"
+      f"是噪声量级，顶点位置不要读得太死。）")
+    A("")
+    ks = [0.25, 0.4, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0]
+    best_on = max(ks, key=lambda k: sweep[(k, "夜盘")]["bn"])
+    best_rth = max(ks, key=lambda k: sweep[(k, "RTH")]["bn"])
+    A("- **夜盘超额在 k≈0.4–0.5 见顶，之后一路单调下滑**："
+      + "、".join(f"k={k:.2f} → "
+                  f"{100*(sweep[(k,'夜盘')]['obs']-sweep[(k,'夜盘')]['null']):+.1f} pp"
+                  for k in ks) + "。")
+    A("- **RTH 的斜坡同向但缓得多**："
+      + "、".join(f"{100*(sweep[(k,'RTH')]['obs']-sweep[(k,'RTH')]['null']):+.1f}"
+                  for k in ks) + " pp。"
+      "两条斜坡的差就是路径效率的差：夜盘每被多要求走一点，掉得更快。")
+    A(f"- 这正是 2.3b 的路径效率在结果侧的显影：**低效率 = 随机游走零假设高估了"
+      f"远目标的可达性**。夜盘不是「胜率低」，是「**走不远**」。"
+      f"v14 现状把夜盘放在 k≈{st.median([abs(s.t1-s.entry)/s.risk for s in ON]):.2f} "
+      f"上，已经滑进了负区。")
+    A(f"- **但是**：毛R 最好的一格（夜盘 k={best_on:.2f}，"
+      f"{sweep[(best_on,'夜盘')]['br']:+.3f}）扣完点差之后是 "
+      f"{sweep[(best_on,'夜盘')]['bn']:+.3f}。"
+      f"扫描全程夜盘的**净**括号R 没有一格转正"
+      f"（最好 {max(sweep[(k,'夜盘')]['bn'] for k in ks):+.3f} @ k={best_on:.2f}），"
+      f"RTH 最好 {max(sweep[(k,'RTH')]['bn'] for k in ks):+.3f} @ k={best_rth:.2f}。")
+    A("")
+    A("**这就是夜盘的死结，也是本报告最重要的一句：**")
+    A("")
+    A(f"> 夜盘只支持**近目标**（k≲0.5 才有正超额），"
+      f"而近目标的毛利（{sweep[(0.5,'夜盘')]['br']:+.3f}R @ k=0.5）"
+      f"付不起摊在窄止损上的点差（{c_o:.3f}R）。"
+      f"**「远目标 + 宽止损」和「近目标 + 窄止损」这两条路夜盘都走不通——"
+      f"前者被路径效率杀死，后者被点差杀死。唯一的出口是把 S 撑宽**"
+      f"（同时降低点差占比、又让同一个 k 对应更远的绝对距离），"
+      f"这正是 3.1 那个 0.12 ATR 闸门在做的事。")
+    A("")
+    A("上一段那个「唯一的出口」是个推论，不能只是说说。同一把 k 尺，"
+      "在**夜盘的宽止损子集**（S ≥ 0.12 日ATR，即 3.1 那个闸门留下的 "
+      f"{len(kept)} 笔）上再扫一遍：")
+    A("")
+    A("| k = T/S | 零假设 | 夜盘全部 命中 / 净括号R | 夜盘 S≥0.12ATR 命中 / 净括号R | "
+      "夜盘 S<0.12ATR 命中 / 净括号R |")
+    A("|---|---|---|---|---|")
+    wide_sweep = {}
+    for k in (0.3, 0.4, 0.5, 0.75, 1.0):
+        cells_ = []
+        for gname, gg in (("all", ON), ("wide", kept), ("narrow", dropped)):
+            hs_, ps_, bns_ = [], [], []
+            for s in gg:
+                tgt = s.entry + s.direction * k * s.risk
+                rc = race(s.entry, s.prot, s.risk, tgt, s.direction, s.i,
+                          bars, subs)
+                if rc.hit is None:
+                    continue
+                hs_.append(rc.hit)
+                ps_.append(rc.pnull)
+                bns_.append((k if rc.hit else -1.0) - SPREAD / s.risk)
+            z, n, obs, null = z_geom(hs_, ps_)
+            bump()
+            wide_sweep[(k, gname)] = {"obs": obs, "bn": st.mean(bns_),
+                                      "z": z, "n": n}
+            cells_.append(f"{100*obs:.1f}% / **{st.mean(bns_):+.3f}**")
+        A(f"| {k:.2f} | {100/(1+k):.1f}% | " + " | ".join(cells_) + " |")
+    A("")
+    wk = [0.3, 0.4, 0.5, 0.75, 1.0]
+    bw = max(wk, key=lambda k: wide_sweep[(k, "wide")]["bn"])
+    bn_ = max(wk, key=lambda k: wide_sweep[(k, "narrow")]["bn"])
+    pos = [k for k in wk if wide_sweep[(k, "wide")]["bn"] > 0]
+    A(f"**推论只被部分证实，如实报告**：撑宽止损把夜盘的净括号R 从最好 "
+      f"{wide_sweep[(bw,'all')]['bn']:+.3f} 抬到 "
+      f"{wide_sweep[(bw,'wide')]['bn']:+.3f}（k={bw:.2f}），"
+      f"{'但只有 k=' + '/'.join(f'{k:.2f}' for k in pos) + f' 这 {len(pos)} 格勉强转正，幅度在 +0.01R 以内' if pos else '整条曲线仍然为负'}"
+      f"；窄止损子集最好也只有 {wide_sweep[(bn_,'narrow')]['bn']:+.3f}"
+      f"（k={bn_:.2f}），整条曲线都在负区。")
+    A(f"**方向对，幅度不够。** 撑宽止损把夜盘从「确定亏」拉到「大致打平」，"
+      f"没有拉到「赚」。这与 3.1 的结论一致（闸门后总净R "
+      f"{bb_['tot']:+.1f}，仍是负的）。"
+      f"结论只能写到这里：**问题不是「几点钟」，是「S 有多宽」；"
+      f"但把 S 撑宽只消除亏损，不产生盈利——v14 的入场本身没有被证明有正 edge。**")
+    A("")
+    A("**判决：尺度错配是「几何零假设为什么塌」的完整解释，"
+      "而且顺着它做（D、E、k 扫描）确实把超额从负拉回零附近；"
+      "但单靠改目标拉不出正的净 R——必须同时把风险距离撑宽，"
+      "否则点差闸门横在那里。**")
+    A("")
+    A(f"- 用户问题里那句「目标改成 0.236 × 夜盘段已实现ATR」——**照字面做，"
+      f"反而更差**（B→C：{b_['br']:+.3f} → {c_['br']:+.3f}）。"
+      f"因为 0.236×段ATR ≈ {sweep and st.median([0.236*seg_atr_of(s)/s.risk for s in ON if seg_atr_of(s)]):.2f}R，"
+      f"还在斜坡的负区里。**把同样的缩放加在位阶梯上（D）才有效**，"
+      f"因为位阶梯的 T1 是「下一个位」，本来就比一个完整步长近得多。")
+    A(f"- 夜盘段 ATR 只有日 ATR 的 {st.median(ratios_on):.2f} 倍、"
+      f"相对 RTH 段只缩 {100*(1-r_seg):.0f}%，"
+      f"而止损（跟着逐根噪声）缩了 {100*(1-r_stop):.0f}%。"
+      f"**要把 T/S 拉平，缩放必须跟逐根振幅走，不能跟整段波幅走。**")
     A("")
 
     # ── 3.3 不做夜盘 ────────────────────────────────────────────────────────
@@ -986,17 +1269,44 @@ def main() -> None:
     A("## 四 · 与假设相反的格子（诚实优先）")
     A("")
     contra = []
+    # 0) 假设里没被支持的那一条
+    contra.append(f"- **「夜盘持有时间更长」这一条不成立**（见 2.3）。裁决中位 "
+                  f"{st.median(bb_o):.0f} 根 vs RTH {st.median(bb_r):.0f} 根，"
+                  f"均值 {st.mean(bb_o):.1f} vs {st.mean(bb_r):.1f}，"
+                  f"只慢 {st.mean(bb_o)/st.mean(bb_r):.2f} 倍。"
+                  f"止损跟着一起缩了，所以「撞到某一边」并没有变慢。"
+                  f"用户假设的三段式（远目标 + 紧止损 + 长持有）只有前两段被数据支持。")
+    # 0b) 目标缩放反事实的负结果
+    contra.append(f"- **「目标 = 0.236 × 夜盘段已实现ATR」照字面做会更差**（见 3.2）。"
+                  f"B→C：几何零假设从 {100*b_['null']:.1f}% 改善到 "
+                  f"{100*c_['null']:.1f}%，超额却从 "
+                  f"{100*(b_['obs']-b_['null']):+.1f} pp 恶化到 "
+                  f"{100*(c_['obs']-c_['null']):+.1f} pp，均括号R "
+                  f"{b_['br']:+.3f} → {c_['br']:+.3f}。"
+                  f"（把同一个缩放加在位阶梯上——口径 D——则有效："
+                  f"超额 {100*(a_['obs']-a_['null']):+.1f} → "
+                  f"{100*(d_['obs']-d_['null']):+.1f} pp。"
+                  f"所以「缩放目标」本身没错，错的是那个 0.236 固定步长，"
+                  f"它把目标推到 {c_['ts']:.1f}R 之外，落在 3.2b 斜坡的深负区。）")
+    contra.append(f"- **最差的一格不在夜盘**：RTH · S<0.12ATR 均净R "
+                  f"{st.mean([s.net for s in RTH if s.d4 < GATE]):+.3f}"
+                  f"（n={len([s for s in RTH if s.d4 < GATE])}），"
+                  f"比夜盘同格的 "
+                  f"{st.mean([s.net for s in ON if s.d4 < GATE]):+.3f} 还差。"
+                  f"「夜盘」不是病因（3.1b）。")
     # 1) 夜盘里有没有格子是正的
     for bk in ON_BUCKETS:
         g = [s for s in sigs if bucket(s.dt) == bk]
         res = [s for s in g if s.hit is not None]
-        if len(res) < 20:
+        if len(res) < 15:
             continue
         z, n, obs, null = z_geom([s.hit for s in res], [s.pnull for s in res])
         if obs > null or st.mean([s.net for s in g]) > bR["net"]:
-            contra.append(f"- **{bk}**：超额 {100*(obs-null):+.1f} pp "
+            contra.append(f"- **{bk}**（n={len(g)}）：超额 {100*(obs-null):+.1f} pp "
                           f"(z={z:+.2f})，均净R {st.mean([s.net for s in g]):+.3f}"
-                          f"（RTH 是 {bR['net']:+.3f}）。")
+                          f"，总净R {sum(s.net for s in g):+.1f}"
+                          f"（RTH 均净R 是 {bR['net']:+.3f}）。"
+                          f"夜盘不是铁板一块。")
     # 2) 大止损的夜盘笔
     big = [s for s in ON if s.d4 >= q([s.d4 for s in ON], 0.8)]
     resb = [s for s in big if s.hit is not None]
@@ -1033,47 +1343,109 @@ def main() -> None:
             ("RTH z_geom", bR["z"]),
             ("全样本 z_geom", bA["z"]),
             ("夜盘 vs RTH 信号密度 两比例 z", zd),
+            ("盘前 07:00–09:30 vs RTH 信号密度 两比例 z", z_pre),
             ("夜盘均净R 的 t", tstat([s.net for s in ON])),
             ("RTH 均净R 的 t", tstat([s.net for s in RTH])),
-            ("S/ATR ↔ 几何零假设 秩相关 z", z_sa)]
+            ("夜盘窄止损格 z_geom (S<0.12ATR, n=%d)" % len(no_narrow),
+             z_geom([s.hit for s in ON if s.d4 < GATE and s.hit is not None],
+                    [s.pnull for s in ON if s.d4 < GATE and s.hit is not None])[0]),
+            ("S/ATR ↔ 几何零假设 秩相关 z（恒等式性质，非检验）", z_sa)]
     for lbl, z in keyz:
         A(f"| {lbl} | {z:+.2f} | {'是' if abs(z) > 1.96 else '否'} | "
           f"{'是' if abs(z) > _bonf_z(CELLS) else '否'} |")
     A("")
-    A(f"**没有一个跨过 Bonferroni 门槛。** 但注意：本文的主张不是"
-      f"「某个格子显著」，而是**一组恒等式**——笔数份额 = K 数份额、"
-      f"止损比 = K 振幅比、点差比 = 调和均值倒数比、E[括号R] = 超额/零假设。"
-      f"这些是算术，不需要显著性；需要显著性的只有「超额 ≠ 0」这一条，"
-      f"而它（z={bO['z']:+.2f}）恰恰是本文最弱的一环，必须如实标注。")
+    A(f"**只有两个跨过 Bonferroni 门槛，且都不是本文的核心主张。** "
+      f"核心主张是**一组恒等式**：笔数份额 = K 数份额；止损比 = 逐根 K 振幅比；"
+      f"点差成本比 = 风险距离调和均值的倒数比；逐笔 E[括号R] = 超额 ÷ 几何零假设"
+      f"（聚合后有缺口，见 2.2b）。这些是算术，不需要显著性。"
+      f"需要显著性的只有「夜盘超额 ≠ 0」这一条——它 z={bO['z']:+.2f}，"
+      f"过 1.96 但过不了 {_bonf_z(CELLS):.2f}，"
+      f"**是本报告最弱的一环，必须如实标注**。样本只有 50 个交易日。")
     A("")
 
     # ── 结论 ────────────────────────────────────────────────────────────────
     A("## 六 · 一句话回答")
     A("")
-    A(f"> **夜盘扛下 {100*bO['tot']/bA['tot']:.0f}% 的亏损，是"
-      f"「{100*math.log(odds_n)/math.log(odds):.0f}% 平凡 + "
-      f"{100*math.log(odds_m)/math.log(odds):.0f}% 真实缺陷」的乘积："
-      f"平凡的那一半是夜盘本来就占了 {100*nb_on/len(live_bars):.0f}% 的 K"
-      f"（信号密度只有 RTH 的 {d_on/d_rth:.2f} 倍，两比例 z={zd:+.2f}，"
-      f"没有额外的过度交易）；真实缺陷的那一半是**尺度错配**——"
-      f"止损跟着夜盘 K 缩到 RTH 的 {st.median(S_o)/st.median(S_r):.0%}，"
-      f"目标却仍按日 ATR 阶梯走，于是几何零假设从 {100*bR['null']:.1f}% 塌到 "
-      f"{100*bO['null']:.1f}%，每 1 pp 的命中缺口被放大成 "
-      f"{1/bO['null']:.2f}R（RTH 只有 {1/bR['null']:.2f}R），"
-      f"同时 0.6 点的固定点差摊在小 {hm_r/hm_o:.1f} 倍的 R 上变贵一倍。**")
+    A(f"> **88% 是「{100*math.log(odds_n)/math.log(odds):.0f}% 平凡 × "
+      f"{100*math.log(odds_m)/math.log(odds):.0f}% 真实缺陷」乘出来的。"
+      f"平凡的那一半：夜盘本来就占 {100*nb_on/len(live_bars):.0f}% 的 K，"
+      f"信号密度只有 RTH 的 {d_on/d_rth:.2f} 倍（z={zd:+.2f}），"
+      f"「73% 的交易在夜盘」这句话零信息量。"
+      f"真实缺陷的那一半：结构止损是逐根 K 振幅的量，夜盘缩到 RTH 的 "
+      f"{st.median(S_o)/st.median(S_r):.0%}；位阶梯目标是整段位移的量，"
+      f"只缩到 {r_seg:.0%}。T/S 因此被放大一倍，几何零假设从 "
+      f"{100*bR['null']:.1f}% 塌到 {100*bO['null']:.1f}%；每 1 pp 的命中缺口"
+      f"随之被放大成 {1/bO['null']:.2f}R（RTH 只有 {1/bR['null']:.2f}R）；"
+      f"同时 0.6 点的固定点差因为分母 S 小了 {hm_r/hm_o:.1f} 倍而贵了 "
+      f"{c_o/c_r:.1f} 倍。**")
     A("")
-    A("拆成可执行的三句：")
+    A("拆成四句，前三句已经坐实，第四句是坦白：")
     A("")
-    A(f"1. **平凡**（不用修）：{100*len(ON)/len(sigs):.0f}% 的笔数份额 ≈ "
+    A(f"1. **平凡，不用修**：{100*len(ON)/len(sigs):.0f}% 的笔数份额 ≈ "
       f"{100*nb_on/len(live_bars):.0f}% 的 K 数份额 ≈ 16.5/23 小时。"
-      f"夜盘没有过度交易。")
-    A(f"2. **真实缺陷 · 主因**（尺度错配）：目标是日线刻度、止损是结构刻度。"
+      f"夜盘没有过度交易——唯一的例外是盘前 07:00–09:30，密度 "
+      f"{dens['盘前 07:00–09:30']/ref_d:.2f}×RTH（z={z_pre:+.2f}），"
+      f"而它恰好也是超额缺口最深的一段。")
+    A(f"2. **真实缺陷 · 主因（尺度错配，解释了几何零假设的全部塌陷）**："
       f"夜盘 T/S 中位 {st.median([abs(s.t1-s.entry)/s.risk for s in ON]):.2f}R vs "
       f"RTH {st.median([abs(s.t1-s.entry)/s.risk for s in RTH]):.2f}R。"
-      f"把目标换成夜盘段刻度后，z_geom 从 {zA[0]:+.2f} 变成 {zC[0]:+.2f}，"
-      f"均括号R 从 {zA[4]:+.3f} 变成 {zC[4]:+.3f}。")
-    A(f"3. **真实缺陷 · 次因**（点差）：占每笔劣势的 {100*dc/dn:.0f}%，"
-      f"且 100% 由「R 更小」解释，不是独立成分。")
+      f"错配的两端不是「夜盘 vs 白天」，是**逐根噪声刻度 vs 整段位移刻度**——"
+      f"夜盘路径效率只有 RTH 的 {e_on/e_rth:.0%}（2.3b）。"
+      f"这也解释了为什么「目标按夜盘段波动缩放」照字面做修不好（3.2）："
+      f"段波幅只需缩 {100*(1-r_seg):.0f}%，止损却已经缩了 {100*(1-r_stop):.0f}%。")
+    A(f"3. **真实缺陷 · 次因（点差）**：占每笔劣势的 {100*dc/dn:.0f}%，"
+      f"且 100% 由「R 更小」解释（点差比 {c_o/c_r:.2f} = 调和均值倒数比 "
+      f"{hm_r/hm_o:.2f}），不是独立成分。模型用的是恒定 0.6 点，"
+      f"真实经纪商夜盘点差更宽，所以这是下界。")
+    A(f"4. **「跑输零假设 6.2 pp」不是常数，是 T/S 的函数**（3.2b 扫描）。"
+      f"把目标锁成 T = k·S、两个时段同一把尺之后，夜盘超额 "
+      f"k=0.5 时 "
+      f"{100*(sweep[(0.5,'夜盘')]['obs']-sweep[(0.5,'夜盘')]['null']):+.1f} pp，"
+      f"k=1.0 时 "
+      f"{100*(sweep[(1.0,'夜盘')]['obs']-sweep[(1.0,'夜盘')]['null']):+.1f}，"
+      f"k=2.0 时 "
+      f"{100*(sweep[(2.0,'夜盘')]['obs']-sweep[(2.0,'夜盘')]['null']):+.1f}，"
+      f"k=3.0 时 "
+      f"{100*(sweep[(3.0,'夜盘')]['obs']-sweep[(3.0,'夜盘')]['null']):+.1f}——"
+      f"**在 k≈0.5 以内它是正的**。v14 现状把夜盘放在 k≈"
+      f"{st.median([abs(s.t1-s.entry)/s.risk for s in ON]):.2f}，正好在拐点右侧。"
+      f"**所以 −6.2 pp 不是「夜盘入场烂」，是「夜盘走不远」——"
+      f"路径效率只有 RTH 的 {e_on/e_rth:.0%}，随机游走零假设高估了它的可达性。**")
+    A("")
+    A("### 还剩下什么没解释")
+    A("")
+    A(f"- 即使把几何完全拉平（k=0.4–0.5 的甜区），夜盘的**净**括号R 最好也只有 "
+      f"{max(sweep[(k,'夜盘')]['bn'] for k in ks):+.3f}；"
+      f"再叠加 S ≥ 0.12 ATR 的宽止损子集才勉强够到 "
+      f"{max(wide_sweep[(k,'wide')]['bn'] for k in wk):+.3f}。"
+      f"**本报告能解释亏损的形状，不能变出盈利。** "
+      f"v14 的入场在任何切法下都没有被证明有正 edge。")
+    A(f"- 夜盘超额 z={bO['z']:+.2f} 过 1.96 但过不了 Bonferroni 的 "
+      f"{_bonf_z(CELLS):.2f}；样本 {len(ON)} 笔 / 50 个交易日 / "
+      f"family size {CELLS}。**方向可信（有单调的机制支撑），幅度不可信。**")
+    A(f"- 位相关的局限（纪律 5）：主样本是 ES=F，与 CAPITALCOM:SPX500 的 ATR "
+      f"比值 mean 1.117 / sd 0.083。所有比例结论（0.49 倍、0.12 ATR、k 值）"
+      f"跨标的可移植，绝对点数不可移植。")
+    A("")
+    A("### 如果只能记一个数")
+    A("")
+    A(f"夜盘里止损 ≥ 0.12 日ATR 的那 {len(kept)} 笔（占 "
+      f"{100*len(kept)/len(ON):.0f}%）均净R {st.mean([s.net for s in kept]):+.3f}，"
+      f"其余 {len(dropped)} 笔 {st.mean([s.net for s in dropped]):+.3f}；"
+      f"RTH 里同样切一刀是 {st.mean(nr_wide):+.3f} vs {st.mean(nr_narrow):+.3f}"
+      f"（3.1b）。**「窄−宽」这个差在两个时段里同号且都很大"
+      f"（RTH {st.mean(nr_narrow)-st.mean(nr_wide):+.3f}、"
+      f"夜盘 {st.mean(no_narrow)-st.mean(no_wide):+.3f}）；"
+      f"「夜盘−RTH」这个差却在两格里换了符号"
+      f"（窄止损格 {st.mean(no_narrow)-st.mean(nr_narrow):+.3f}、"
+      f"宽止损格 {st.mean(no_wide)-st.mean(nr_wide):+.3f}）。"
+      f"亏损是按「止损有多窄」分布的，不是按「几点钟」分布的——"
+      f"最差的一格其实是 RTH 的窄止损。"
+      f"夜盘只是窄止损的富集区（占比 "
+      f"{100*len(no_narrow)/len(ON):.0f}% vs RTH {100*len(nr_narrow)/len(RTH):.0f}%）。**")
+    A("")
+    A("这也正好回答了「为什么不该在规则层分时段」：**该分的是风险距离，不是时钟。**"
+      "按时钟切会同时砍掉夜盘里那批宽止损的好笔，按风险距离切则两个时段一视同仁。")
     A("")
 
     txt = "\n".join(o)

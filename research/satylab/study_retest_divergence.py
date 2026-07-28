@@ -96,6 +96,54 @@ def pb_z(hits: list[bool], ps: list[float]) -> tuple[float, float, float]:
     return (k / n, sp / n, z)
 
 
+# ── 组间比较必须在「超额」尺度上做，不能用原味两比例 z ──────────────────────
+# 本项目的铁律 1 说零假设是 S/(S+T)。两个子组的止损/目标几何**不一样**，
+# 所以它们的零假设也不一样（实测能差 7 个百分点）。直接比两个原始命中率，
+# 等于把几何差异当成了信号——这正是本项目一路上最容易犯的错。
+# 下面的统计量比的是「各自相对自己零假设的超额」，几何差异被逐笔扣掉。
+def _exc(tr: list[dict]) -> tuple[float, float, int]:
+    """返回 (平均超额, 平均超额的方差, n)。超额 = 命中(0/1) − 该笔的几何零假设。"""
+    r = [t for t in tr if t["hit"] is not None]
+    n = len(r)
+    if n == 0:
+        return (float("nan"), float("nan"), 0)
+    e = sum((1 if t["hit"] else 0) - t["p"] for t in r) / n
+    v = sum(t["p"] * (1 - t["p"]) for t in r) / (n * n)
+    return (e, v, n)
+
+
+def excess_z(a: list[dict], b: list[dict], min_n: int = 10) -> float:
+    """A 组的超额 vs B 组的超额。几何零假设逐笔扣除后的组间 z。"""
+    ea, va, na = _exc(a)
+    eb, vb, nb = _exc(b)
+    if na < min_n or nb < min_n or not (va + vb) > 0:
+        return float("nan")
+    return (ea - eb) / math.sqrt(va + vb)
+
+
+def excess_interaction_z(a11, a10, a01, a00, min_n: int = 8) -> float:
+    """2×2 交互：(超额11 − 超额10) − (超额01 − 超额00)，同样在超额尺度上。"""
+    parts = [_exc(x) for x in (a11, a10, a01, a00)]
+    if any(p[2] < min_n for p in parts):
+        return float("nan")
+    est = (parts[0][0] - parts[1][0]) - (parts[2][0] - parts[3][0])
+    var = sum(p[1] for p in parts)
+    return est / math.sqrt(var) if var > 0 else float("nan")
+
+
+def welch_t(a: list[float], b: list[float]) -> float:
+    """两组均值差的 Welch t（用于均净R 这种连续量）。"""
+    if len(a) < 3 or len(b) < 3:
+        return float("nan")
+    va, vb = st.variance(a) / len(a), st.variance(b) / len(b)
+    return (mean(a) - mean(b)) / math.sqrt(va + vb) if (va + vb) > 0 \
+        else float("nan")
+
+
+def nets_of(tr: list[dict]) -> list[float]:
+    return [t["net"] for t in tr if t["hit"] is not None]
+
+
 def f(x, d: int = 2) -> str:
     return "–" if x is None or x != x else f"{x:+.{d}f}"
 
@@ -292,6 +340,18 @@ def named_ratios() -> list[float]:
     return list(levels.RATIOS)
 
 
+PLB_KINDS = ("均匀随机", "整体平移", "逐位抖动")
+
+
+def plb_rng(kind: str, rep: int, d: date) -> random.Random:
+    """确定性种子。**不能用 `hash()`** —— Python 对字符串的 hash 每个进程都不同，
+    用它做种子会让「固定随机种子」这句话变成假话（本轮第一版就踩了：
+    同一份代码跑两次，安慰剂的 z_geom 从 +1.41 变成 −1.95）。"""
+    k = PLB_KINDS.index(kind)
+    return random.Random(SEED * 1_000_003 + rep * 9176 + d.toordinal() * 31
+                         + k * 7_919)
+
+
 def placebo_ratios(kind: str, r: random.Random) -> list[float]:
     named = named_ratios()
 
@@ -343,8 +403,14 @@ def run_scan(ds: Dataset, ratios_for_day, in_b=IN_BAND,
 
 # ════════════════════════════ 赛跑与交易 ════════════════════════════════════
 def race(rows: list[Bar], start: int, d: int, stop: float, target: float,
-         subs=None, cap: int | None = None) -> bool | None:
-    """止损与目标谁先到。同一根（或同一根子 K）内同时碰到 → None（未判定）。"""
+         subs=None, cap: int | None = None) -> tuple[bool | None, str]:
+    """止损与目标谁先到。返回 (hit, why)。
+
+    why = ""（判定了）/ "AMBIG"（同一根 K 内同时碰到两边，分辨率不够）/
+    "TIMEOUT"（窗口内两边都没碰到）。**这两种未判定必须分开数**：AMBIG 是
+    分辨率缺陷（用更细的子 K 可以救），TIMEOUT 是行情本身没走完（救不了）。
+    把它们混在一起报，会让「换更细的子 K 复核」这件事看起来什么都没改变。
+    """
     end = len(rows) if cap is None else min(len(rows), start + cap)
     for j in range(start, end):
         seq = subs[j] if (subs is not None and subs[j]) else [rows[j]]
@@ -352,12 +418,12 @@ def race(rows: list[Bar], start: int, d: int, stop: float, target: float,
             hs = (sb.low <= stop) if d > 0 else (sb.high >= stop)
             ht = (sb.high >= target) if d > 0 else (sb.low <= target)
             if hs and ht:
-                return None
+                return None, "AMBIG"
             if hs:
-                return False
+                return False, ""
             if ht:
-                return True
-    return None
+                return True, ""
+    return None, "TIMEOUT"
 
 
 def s2_trades(ds: Dataset, eps: list[Ep]) -> list[dict]:
@@ -380,8 +446,9 @@ def s2_trades(ds: Dataset, eps: list[Ep]) -> list[dict]:
         tdist = d * (target - entry)
         if tdist <= 0:
             continue
-        hit = race(rows, e.i1 + 1, d, stop, target, subs)
-        out.append({"ep": e, "hit": hit, "p": risk / (risk + tdist),
+        hit, why = race(rows, e.i1 + 1, d, stop, target, subs)
+        out.append({"ep": e, "hit": hit, "why": why,
+                    "p": risk / (risk + tdist),
                     "r": float("nan") if hit is None
                     else ((tdist / risk) if hit else -1.0),
                     "net": float("nan") if hit is None
@@ -404,6 +471,8 @@ def summarize(tr: list[dict], base: list[dict] | None = None) -> dict:
         if 0 < len(nets) < len(bn):
             zs = _fpc_z(nets, bn)
     return {"n_all": len(tr), "n": len(res), "unres": unres,
+            "amb": sum(1 for t in tr if t["why"] == "AMBIG"),
+            "tmo": sum(1 for t in tr if t["why"] == "TIMEOUT"),
             "k": sum(1 for h in hits if h), "obs": o, "null": nu, "z_geom": z,
             "avg_r": mean(rs), "avg_net": mean(nets),
             "tot_r": sum(rs), "net_r": sum(nets), "t_net": tstat(nets),
@@ -411,18 +480,33 @@ def summarize(tr: list[dict], base: list[dict] | None = None) -> dict:
             "ts": st.median([t["ts"] for t in res]) if res else float("nan")}
 
 
-def row_s2(lbl: str, m: dict) -> str:
+# 每一个报出来的 z_geom 都登记在案，文末的「最大 |z|」才敢说是真的最大。
+# 纪律：只要某个 z_geom 出现在正文的表里，就必须先经过 regz()。
+ZREG: list[tuple[str, float]] = []
+
+
+def regz(lbl: str, m: dict) -> str:
+    """登记并返回格式化的 z_geom。"""
+    if m["n"] and m["z_geom"] == m["z_geom"]:
+        ZREG.append((lbl, m["z_geom"]))
+    return f(m["z_geom"])
+
+
+def row_s2(lbl: str, m: dict, reg: bool = True) -> str:
     if m["n"] == 0:
-        return f"| {lbl} | {m['n_all']} | 0 | – | – | – | – | – | – | – |"
-    return (f"| {lbl} | {m['n_all']} | {m['n']} | {m['unres']} | "
+        return f"| {lbl} | {m['n_all']} | 0 | – | – | – | – | – | – | – | – |"
+    if reg and m["z_geom"] == m["z_geom"]:
+        ZREG.append((lbl.replace("*", ""), m["z_geom"]))
+    return (f"| {lbl} | {m['n_all']} | {m['n']} | {m['amb']} | {m['tmo']} | "
             f"**{pct(m['k'], m['n'])}** | {100*m['null']:.1f}% | "
             f"**{f(m['z_geom'])}** | {m['avg_r']:+.3f} | "
             f"**{m['avg_net']:+.3f}** | {m['net_r']:+.1f} | {f(m['t_net'])} |")
 
 
-HEAD_S2 = ("| 分组 | 事件数 | 已判定 | 未判定 | **命中率 [95% Wilson]** | "
-           "几何零假设 | **z_geom** | 均R(毛) | **均净R** | 总净R | t(均净R) |")
-RULE_S2 = "|---|---|---|---|---|---|---|---|---|---|---|"
+HEAD_S2 = ("| 分组 | 事件数 | 已判定 | 未判定(同根歧义) | 未判定(未走完) | "
+           "**命中率 [95% Wilson]** | 几何零假设 | **z_geom** | 均R(毛) | "
+           "**均净R** | 总净R | t(均净R) |")
+RULE_S2 = "|---|---|---|---|---|---|---|---|---|---|---|---|"
 
 
 # ════════════════════════════ S3：Phase 背离 ════════════════════════════════
@@ -489,8 +573,9 @@ def s3_trades(sigs: list[Ext], bars: list[Bar], subs, book: LevelBook,
         tdist = d * (target - entry)
         if tdist <= 0:
             continue
-        hit = race(bars, i + 1, d, stop, target, subs, cap)
-        out.append({"ext": s, "hit": hit, "p": risk / (risk + tdist),
+        hit, why = race(bars, i + 1, d, stop, target, subs, cap)
+        out.append({"ext": s, "hit": hit, "why": why,
+                    "p": risk / (risk + tdist),
                     "r": float("nan") if hit is None
                     else ((tdist / risk) if hit else -1.0),
                     "net": float("nan") if hit is None
@@ -516,14 +601,13 @@ def main() -> None:                                          # noqa: C901
     def real(_d: date) -> list[float]:
         return named_ratios()
 
-    plb: dict[tuple[str, date], list[float]] = {}
+    plb: dict[tuple[str, int, date], list[float]] = {}
 
-    def make_plb(kind: str):
+    def make_plb(kind: str, rep: int = 0):
         def g(d: date) -> list[float]:
-            key = (kind, d)
+            key = (kind, rep, d)
             if key not in plb:
-                r = random.Random(hash((SEED, kind, d.toordinal())) & 0xFFFFFFFF)
-                plb[key] = placebo_ratios(kind, r)
+                plb[key] = placebo_ratios(kind, plb_rng(kind, rep, d))
             return plb[key]
         return g
 
@@ -571,14 +655,26 @@ def main() -> None:                                          # noqa: C901
                 "n_ep": len(e2),
                 "maxk": max((e.k for e in e2), default=0)}
 
-    print("S2 安慰剂 …", file=sys.stderr)
+    # 安慰剂：不能只抽一把。单把安慰剂的 z_geom 抖动幅度和「效应」本身同量级
+    # （本轮初版就因为种子不确定，两次运行分别得到 +1.41 和 −1.95）。
+    # 所以这里抽 REPS 把，报出整条零分布，再看真具名位落在第几个百分位。
+    REPS = 200
+    print(f"S2 安慰剂（{REPS} 次重抽）…", file=sys.stderr)
     PLB = {}
-    for kind in ("均匀随机", "整体平移", "逐位抖动"):
-        e2 = run_scan(DS, make_plb(kind))
-        t2 = s2_trades(DS, e2)
-        PLB[kind] = {"all": summarize(t2),
-                     "k1": summarize([t for t in t2 if t["ep"].k == 1]),
-                     "k2": summarize([t for t in t2 if t["ep"].k >= 2])}
+    for kind in PLB_KINDS:
+        zs, nets, d21 = [], [], []
+        for rep in range(REPS):
+            t2 = s2_trades(DS, run_scan(DS, make_plb(kind, rep)))
+            m2 = summarize(t2)
+            a1 = summarize([t for t in t2 if t["ep"].k == 1])
+            a2 = summarize([t for t in t2 if t["ep"].k >= 2])
+            if m2["z_geom"] == m2["z_geom"]:
+                zs.append(m2["z_geom"])
+                nets.append(m2["avg_net"])
+            if a1["n"] and a2["n"]:
+                d21.append(a2["avg_net"] - a1["avg_net"])
+            plb.clear()
+        PLB[kind] = {"z": sorted(zs), "net": sorted(nets), "d21": sorted(d21)}
 
     print("S2 对照（^GSPC / 1m 子K）…", file=sys.stderr)
     EPS_G = run_scan(DS_G, real)
@@ -604,11 +700,12 @@ def main() -> None:                                          # noqa: C901
     m_dec, m_inc = summarize(dec_tr, TR), summarize(inc_tr, TR)
     m_dec2 = summarize(dec2_tr, TR)
     m_decs = summarize(dec_same, TR)
-    # 深度本身作为连续变量（不看递减，只看这次深不深）
-    dep_vals = sorted(t["ep"].depth for t in TR)
-    dmed = dep_vals[len(dep_vals) // 2] if dep_vals else float("nan")
-    m_shal = summarize([t for t in TR if t["ep"].depth <= dmed], TR)
-    m_deep = summarize([t for t in TR if t["ep"].depth > dmed], TR)
+    # 深度本身作为连续变量（不看递减，只看这次深不深）。
+    # 注意：一半以上的拒绝事件深度恰好为 0（价格进了带但根本没越过该位），
+    # 所以「按中位数对切」实际就是「0 vs 非 0」，标签必须照实说。
+    zero_tr = [t for t in TR if t["ep"].depth <= 1e-9]
+    pos_tr = [t for t in TR if t["ep"].depth > 1e-9]
+    m_shal, m_deep = summarize(zero_tr, TR), summarize(pos_tr, TR)
 
     print("S3 背离 …", file=sys.stderr)
     b5 = data.load("ES=F", "60d", "5m")
@@ -644,7 +741,7 @@ def main() -> None:                                          # noqa: C901
     A()
     A(f"生成脚本 `research/satylab/study_retest_divergence.py`（种子 {SEED}）。"
       f"主样本 **ES=F 5m，{ndays} 个交易日 / {DS.n_bars} 根 K，含完整夜盘**"
-      "（作息与 CAPITALCOM:SPX50 0 一致）；S3 的 setup 在由同一批 5m 聚合出的 "
+      "（作息与 CAPITALCOM:SPX500 一致）；S3 的 setup 在由同一批 5m 聚合出的 "
       f"**10m（{len(bars10)} 根）** 上，路径判定落到 5m 子 K。")
     A()
     A("这两个 setup 是用户口述三步法的第 2、3 步，**v14 里完全没有实现**，"
@@ -669,41 +766,47 @@ def main() -> None:                                          # noqa: C901
       f"均净R {m_ge2['avg_net']:+.3f}）。"
       f"**k≥2 相对全样本的选择 z_sel = {f(m_ge2['z_sel'])}**——"
       f"{'没有证据说明「多碰几次」筛出了更好的单笔' if abs(m_ge2['z_sel']) < 1.96 else '这个方向需要单独讨论'}。")
-    A(f"- **衰减（穿透深度递减）比次数更有说服力，但仍不够**："
-      f"「本次深度 < 上次深度」的 {m_dec['n']} 笔命中 "
-      f"{pct(m_dec['k'], m_dec['n'])} vs 零假设 {100*m_dec['null']:.1f}%，"
-      f"z_geom {f(m_dec['z_geom'])}，均净R {m_dec['avg_net']:+.3f}；"
-      f"「深度未递减」{m_inc['n']} 笔 z_geom {f(m_inc['z_geom'])}，"
-      f"均净R {m_inc['avg_net']:+.3f}。两组均净R 差 "
-      f"{m_dec['avg_net']-m_inc['avg_net']:+.3f}，z_sel = {f(m_dec['z_sel'])}。")
+    A(f"- **衰减（穿透深度递减）是三条候选规则里最不坏的一条，但同样没到证据强度**："
+      f"「本次深度 < 上次深度」{m_dec['n']} 笔，z_geom {f(m_dec['z_geom'])}，"
+      f"均净R {m_dec['avg_net']:+.3f}；「深度未递减」{m_inc['n']} 笔，"
+      f"z_geom {f(m_inc['z_geom'])}，均净R {m_inc['avg_net']:+.3f}；"
+      f"两组超额口径 z = {f(excess_z(dec_tr, inc_tr))}，"
+      f"均净R 差 {m_dec['avg_net']-m_inc['avg_net']:+.3f}。"
+      f"三条规则的 z_sel 分别是：次数 k≥2 {f(m_ge2['z_sel'])}、"
+      f"一步递减 {f(m_dec['z_sel'])}、两步递减 {f(m_dec2['z_sel'])}——"
+      "**全部不显著；递减只是「负得比计数少」，不是「正」。**")
     A()
     zs_div = [(N, k, DIV[(N, k)]["m"][c]["z_geom"], c)
               for (N, k) in DIV for c in ("D1", "D1L1")
               if DIV[(N, k)]["m"][c]["n"] >= 25]
     bst = max(zs_div, key=lambda x: x[2]) if zs_div else None
-    A("**S3（Phase 背离）：单项无效；与具名位的合取样本太薄，无法声称有效，"
-      "但也不能反过来声称已被证伪。**")
-    for N in (10,):
-        for kind in ("bull", "bear"):
-            r = DIV[(N, kind)]
-            A(f"- 10m/N={N}/{'底' if kind=='bull' else '顶'}背离：共同底盘"
-              f"（价格创 {N} 根新极值）{r['n_ext']} 个事件，其中背离 "
-              f"{len(r['g']['D1'])}、非背离 {len(r['g']['D0'])}；"
-              f"背离 z_geom {f(r['m']['D1']['z_geom'])}"
-              f"（n={r['m']['D1']['n']}，均净R {r['m']['D1']['avg_net']:+.3f}），"
-              f"非背离 z_geom {f(r['m']['D0']['z_geom'])}"
-              f"（n={r['m']['D0']['n']}，均净R {r['m']['D0']['avg_net']:+.3f}）。")
-    if bst:
-        A(f"- 全部 {len(zs_div)} 个 n≥25 的背离格子里最好的一个是 "
-          f"「N={bst[0]} · {'底' if bst[1]=='bull' else '顶'} · "
-          f"{'纯背离' if bst[3]=='D1' else '背离∧在位'}」，z_geom = {bst[2]:+.2f}。")
-    A(f"- **合取（背离 ∧ 极值落在具名位 ≤{AT_LEVEL} ATR）本身把样本砍掉一大半**，"
-      "详见 §B.3 的 2×2 表和 §B.4 的交互检验：交互项在四个 N 上都不显著，"
-      "且每个合取格的 n 都在两位数。**这是「没测出来」，不是「测出来没有」。**")
+    zs_d1 = [DIV[k]["m"]["D1"]["z_geom"] for k in DIV
+             if DIV[k]["m"]["D1"]["n"] >= 20]
+    zdm = [excess_z(DIV[(N, k)]["g"]["D1"], DIV[(N, k)]["g"]["D0"])
+           for N in (10, 15, 20, 30) for k in ("bull", "bear")]
+    zdm = [z for z in zdm if z == z]
+    nneg = sum(1 for N in (10, 15, 20, 30) for k in ("bull", "bear")
+               if DIV[(N, k)]["m"]["D1"]["avg_net"] < 0)
+    A("**S3（Phase 背离）：作为入场条件不成立；但它确实分离样本——"
+      "分离的形状是「否决」而不是「入场」。合取则是检验力不足，不下结论。**")
+    A(f"- **单项打不过自己的几何零假设**：8 个纯背离格子 z_geom 最大 "
+      f"{max(zs_d1):+.2f}，均净R {nneg}/8 为负。")
+    A(f"- **但背离标签不是完全没用**：把它和「无背离」（价格创新极值且 Phase "
+      f"**也**创新极值＝纯动量延续）在**超额口径**下对比，8 个格子的 z 范围 "
+      f"[{min(zdm):+.2f}, {max(zdm):+.2f}]（>1.96 的只有 "
+      f"{sum(1 for z in zdm if z > 1.96)} 个），Δ均净R 8/8 同号——"
+      "但四个 N 跑在同一批 K 上高度重叠，实际只等于「底/顶两次同号」。"
+      "**结论是「无背离那一类特别差」，不是「背离那一类好」。**")
+    A("- ⚠ **这里必须用超额口径**：两组止损几何不同、几何零假设能差 7 个百分点，"
+      "原味两比例 z 会把同一个格子从 +1.93 虚报成 +3.00（§B.4 保留了这一列做对照）。")
+    A(f"- **合取（背离 ∧ 极值落在具名位 ≤{AT_LEVEL} ATR）：交互 z 全部在 ±2 以内，"
+      f"但对照格（背离∧不在位）只有十几笔，本设计测不出中等大小的交互。**"
+      "这是『没测出来』，不是『测出来没有』——见 §B.4 末尾写给下一轮的补法。")
     A()
     A("**共同判决：两条都不该以「新增入场条件」的身份进 v15。** "
-      "S2 可以作为一个上下文标签（深度递减比计数更值得画出来）；"
-      "S3 的合取需要真实 CAPITALCOM:SPX500 历史 + 更长样本才能定论。")
+      "S2 值得画出来的是**穿透深度**（不是触及次数）；"
+      "S3 值得画出来的是**背离灯 + 它离最近具名位多远**——"
+      "画出来同时也在为「合取」积累前向样本，这是本项目现在最缺的东西。")
     A()
 
     # ═══════════════════════ S2 ═══════════════════════
@@ -727,8 +830,10 @@ def main() -> None:                                          # noqa: C901
     A("- **零假设**：`P = S/(S+T)`，S=止损距离、T=目标距离，逐笔不同，"
       "求和成泊松二项后给 `z_geom`。**不是 50%**。")
     A(f"- **成本**：净R = 毛R − {SPREAD}点 / 风险点数。")
-    A("- **路径**：5m 逐根推进，同一根同时碰到止损与目标 → 未判定，剔除并如实报数"
-      "（§A.7 用 1m 子 K 复核这层剔除有没有改变结论）。交易只在当日内结算"
+    A("- **路径**：5m 逐根推进。两种未判定分开数——**同根歧义**（一根 K 内同时碰到"
+      "止损与目标，分辨率不够）与**未走完**（当日收盘前两边都没碰到）。"
+      "两者都剔除，但必须分开报：只有前者才是「换更细的子 K 能救」的那一种"
+      "（§A.7 用 1m 复核）。交易只在当日内结算"
       "（阶梯每天重建，锚=前日收盘，ATR=前日 Wilder ATR(14)）。")
     A()
     A(f"事件总数 **{len(EPS)}**，其中 REJECT {kind_cnt['REJECT']}、"
@@ -799,12 +904,13 @@ def main() -> None:                                          # noqa: C901
             main = " ★" if (ib, ob) == (IN_BAND, OUT_BAND) else ""
             d = (r["k2"]["avg_net"] - r["k1"]["avg_net"]
                  if r["k1"]["n"] and r["k2"]["n"] else float("nan"))
+            tag = f"§A.3 带宽 in±{ib}/out{ob}"
             A(f"| ±{ib}{flag}{main} | {ob} | {r['n_ep']} | {r['maxk']} | "
-              f"{r['all']['n']} / {f(r['all']['z_geom'])} / "
+              f"{r['all']['n']} / {regz(tag+' 全部', r['all'])} / "
               f"{r['all']['avg_net']:+.3f} | "
-              f"{r['k1']['n']} / {f(r['k1']['z_geom'])} / "
+              f"{r['k1']['n']} / {regz(tag+' k=1', r['k1'])} / "
               f"{r['k1']['avg_net']:+.3f} | "
-              f"{r['k2']['n']} / {f(r['k2']['z_geom'])} / "
+              f"{r['k2']['n']} / {regz(tag+' k≥2', r['k2'])} / "
               f"{r['k2']['avg_net']:+.3f} | {f(d, 3)} |")
             cell(3)
     A()
@@ -859,21 +965,29 @@ def main() -> None:                                          # noqa: C901
                    ("②′ 衰减且同侧再测", m_decs),
                    ("③ 两步衰减：深度连续两次递减(k≥3)", m_dec2),
                    ("对照：深度未递减", m_inc),
-                   ("对照：本次深度 ≤ 全样本中位", m_shal),
-                   ("对照：本次深度 > 全样本中位", m_deep)):
+                   ("对照：本次深度 = 0（进带但没越过该位）", m_shal),
+                   ("对照：本次深度 > 0（确实越过了该位）", m_deep)):
         A(row_s2(lbl, m))
         cell()
     A()
-    zdi = stats.two_proportion_z(m_dec["k"], m_dec["n"], m_inc["k"], m_inc["n"])
-    A(f"- **递减 vs 未递减**（在 k≥2 内部对切，两组的入场几何完全同构）："
-      f"命中率两比例 z = **{zdi:+.2f}**；均净R 差 "
-      f"**{m_dec['avg_net']-m_inc['avg_net']:+.3f}**。")
+    zdi = excess_z(dec_tr, inc_tr)
+    A(f"- **递减 vs 未递减**（在 k≥2 内部对切）：**超额口径 z = {f(zdi)}**"
+      f"（两组的止损/目标几何并不同构，所以这里比的是各自相对自己几何零假设的"
+      f"超额，不是原始命中率之差——原味两比例 z = "
+      f"{stats.two_proportion_z(m_dec['k'], m_dec['n'], m_inc['k'], m_inc['n']):+.2f}，"
+      f"那个数不能用）；均净R 差 **{m_dec['avg_net']-m_inc['avg_net']:+.3f}**"
+      f"（Welch t = {f(welch_t(nets_of(dec_tr), nets_of(inc_tr)))}）。")
     A(f"- **递减 vs 计数**：规则 ② 的 z_sel = {f(m_dec['z_sel'])}，"
       f"规则 ① 的 z_sel = {f(m_ge2['z_sel'])}。"
       f"两者都是相对同一个全样本基线算的，可以直接比。")
     A(f"- **深度作为连续变量**（不看递减，只看这一次扎得深不深）："
-      f"浅的一半均净R {m_shal['avg_net']:+.3f}（z_geom {f(m_shal['z_geom'])}），"
-      f"深的一半 {m_deep['avg_net']:+.3f}（z_geom {f(m_deep['z_geom'])}）。")
+      f"深度=0 的 {m_shal['n']} 笔均净R {m_shal['avg_net']:+.3f}"
+      f"（z_geom {f(m_shal['z_geom'])}），深度>0 的 {m_deep['n']} 笔 "
+      f"{m_deep['avg_net']:+.3f}（z_geom {f(m_deep['z_geom'])}），"
+      f"超额口径 z = {f(excess_z(pos_tr, zero_tr))}。"
+      "⚠ 这一对切**不是**「浅一半 / 深一半」——"
+      f"{100*m_shal['n']/max(1,m_shal['n']+m_deep['n']):.0f}% 的拒绝事件深度恰好为 0，"
+      "所以中位数就是 0，这里只能切成「有没有越过该位」。")
     A()
     win = max([("① 次数 k≥2", m_ge2), ("② 深度递减", m_dec),
                ("③ 两步递减", m_dec2)], key=lambda x: (x[1]["z_sel"]
@@ -892,24 +1006,62 @@ def main() -> None:                                          # noqa: C901
           "这是零成本的上下文，不是自动触发。")
     A()
 
-    A("### A.5 安慰剂：把具名位换成随机价位")
+    A("### A.5 安慰剂：把具名位换成随机价位（200 次重抽的零分布）")
     A()
-    A("三种安慰剂（密度分布不同，做法不同）：均匀随机 17 个位（与任一具名位 ≥0.06 ATR）；"
-      "整条阶梯平移 +0.118 ATR；每个位随机抖动 ±0.06~0.118 ATR。")
+    A("三种安慰剂（密度分布不同，做法不同）：**均匀随机** 17 个位"
+      "（与任一具名位 ≥0.06 ATR）；**整体平移** 整条阶梯 +0.118 ATR"
+      "（挪到相邻档位正中间）；**逐位抖动** 每个位随机偏移 ±0.06~0.118 ATR。")
     A()
-    A("| 位集合 | 全部 n | 全部 z_geom | 全部均净R | k=1 均净R | k≥2 均净R | k≥2−k=1 |")
-    A("|---|---|---|---|---|---|---|")
-    rowsp = [("**真具名位**", {"all": m_all, "k1": m_ge1, "k2": m_ge2})]
-    rowsp += [(k, v) for k, v in PLB.items()]
-    for lbl, r in rowsp:
-        A(f"| {lbl} | {r['all']['n']} | {f(r['all']['z_geom'])} | "
-          f"{r['all']['avg_net']:+.3f} | {r['k1']['avg_net']:+.3f} | "
-          f"{r['k2']['avg_net']:+.3f} | "
-          f"{r['k2']['avg_net']-r['k1']['avg_net']:+.3f} |")
+    A("> **本节的方法论比结果重要。** 初版只抽了一把安慰剂，"
+      "而且种子用了 Python 的 `hash()`——它对字符串是每进程随机的。"
+      "结果：同一份代码跑两次，「逐位抖动」的 z_geom 从 **+1.41** 变成 **−1.95**，"
+      "足以把结论从「安慰剂更好」翻成「安慰剂更差」。"
+      "**一把安慰剂根本不是对照，它只是又一次抽样。** "
+      "所以下面改成抽 200 把，报整条零分布，再看真具名位落在第几个百分位。")
+    A()
+    A("| 安慰剂 | z_geom 零分布（均值 / 5% / 50% / 95%） | "
+      "均净R 零分布（均值 / 5% / 95%） | **真具名位的百分位** |")
+    A("|---|---|---|---|")
+
+    def q(v: list[float], p: float) -> float:
+        return v[min(len(v) - 1, max(0, int(p * len(v))))] if v else float("nan")
+
+    def prc(v: list[float], x: float) -> float:
+        return 100.0 * sum(1 for a in v if a < x) / len(v) if v else float("nan")
+
+    for kind in PLB_KINDS:
+        r = PLB[kind]
+        if len(set(r["z"])) <= 1:          # 整体平移没有随机性，200 把全一样
+            A(f"| {kind}（确定性变体，无随机性） | {r['z'][0]:+.2f}（单值） | "
+              f"{r['net'][0]:+.3f}（单值） | 不适用——只有一个取值 |")
+            cell()
+            continue
+        A(f"| {kind} | {mean(r['z']):+.2f} / {q(r['z'],.05):+.2f} / "
+          f"{q(r['z'],.50):+.2f} / {q(r['z'],.95):+.2f} | "
+          f"{mean(r['net']):+.3f} / {q(r['net'],.05):+.3f} / "
+          f"{q(r['net'],.95):+.3f} | z_geom 第 "
+          f"**{prc(r['z'], m_all['z_geom']):.0f}** 百分位，"
+          f"均净R 第 **{prc(r['net'], m_all['avg_net']):.0f}** 百分位 |")
         cell(2)
     A()
-    A("**安慰剂要回答的是「斐波那契有没有贡献」**，不是「效应真不真」。"
-      "如果真具名位和随机位打出来一样，那么结论里的「具名位」三个字可以删掉。")
+    A(f"真具名位：z_geom **{f(m_all['z_geom'])}**，均净R **{m_all['avg_net']:+.3f}**。"
+      "「整体平移」是一个确定性变体（整条阶梯挪 +0.118 ATR，没有随机成分），"
+      "所以它没有零分布，只有一个取值——列在这里是为了看「挪到档位正中间」"
+      "会不会变差，答案是不会。")
+    A()
+    zw = PLB["均匀随机"]
+    A(f"**判读。** 随机位的 z_geom 零分布宽度是 "
+      f"[{q(zw['z'],.05):+.2f}, {q(zw['z'],.95):+.2f}]——"
+      "**「把随机价位当成支撑阻力去做拒绝单」这件事本身的结果波动，"
+      "就已经和我们想找的效应同量级。** 真具名位落在这条零分布的中段"
+      f"（z_geom 第 {prc(zw['z'], m_all['z_geom']):.0f} 百分位，"
+      f"均净R 第 {prc(zw['net'], m_all['avg_net']):.0f} 百分位），"
+      "没有任何一项排到尾部。")
+    A()
+    A("**所以：斐波那契这一层没有贡献。** 把结论里的「具名位」三个字删掉，"
+      "S2 的全部结论一字不变。这一节同时也说明——"
+      "本项目以后凡是做安慰剂对照，**必须重抽多次并报零分布**，"
+      "单次抽样的安慰剂没有证据价值。")
     A()
 
     A("### A.6 分层：位类型 / 时段（如实报告与假设相反的格子）")
@@ -921,7 +1073,8 @@ def main() -> None:                                          # noqa: C901
         if m["n"] < 30:
             continue
         A(f"| {tp} | {m['n']} | {pct(m['k'], m['n'])} | "
-          f"{100*m['null']:.1f}% | {f(m['z_geom'])} | {m['avg_net']:+.3f} |")
+          f"{100*m['null']:.1f}% | {regz('§A.6 位类型 '+tp, m)} | "
+          f"{m['avg_net']:+.3f} |")
         cell()
     A()
     A("| 时段 | n | 命中率 | 几何零假设 | z_geom | 均净R |")
@@ -929,7 +1082,7 @@ def main() -> None:                                          # noqa: C901
     for ss in ("RTH", "夜盘"):
         m = summarize([t for t in TR if t["ep"].sess == ss], TR)
         A(f"| {ss} | {m['n']} | {pct(m['k'], m['n'])} | {100*m['null']:.1f}% | "
-          f"{f(m['z_geom'])} | {m['avg_net']:+.3f} |")
+          f"{regz('§A.6 时段 '+ss, m)} | {m['avg_net']:+.3f} |")
         cell()
     A()
     A("| 上一次触及的结果 | n | 命中率 | 几何零假设 | z_geom | 均净R |")
@@ -940,7 +1093,7 @@ def main() -> None:                                          # noqa: C901
         if m["n"] < 20:
             continue
         A(f"| {lbl} | {m['n']} | {pct(m['k'], m['n'])} | {100*m['null']:.1f}% | "
-          f"{f(m['z_geom'])} | {m['avg_net']:+.3f} |")
+          f"{regz('§A.6 '+lbl, m)} | {m['avg_net']:+.3f} |")
         cell()
     A()
 
@@ -958,15 +1111,30 @@ def main() -> None:                                          # noqa: C901
     A(row_s2(f"ES=F 5m，同样这 {len(DS_1M.rows_by_day)} 天 · **1m 子K 判路径**", m_11))
     cell(4)
     A()
-    A(f"**纪律 2 的复核。** 主表用 5m 判路径，「同一根 5m 内同时碰到止损与目标」"
-      f"被记为未判定剔除（主表 {m_all['unres']}/{m_all['n_all']} 笔，"
-      f"{100*m_all['unres']/max(1,m_all['n_all']):.0f}%）。"
-      f"在有 1m 数据的 {len(DS_1M.rows_by_day)} 天上把这层歧义真正拆开："
-      f"未判定从 {m_15['unres']} 笔降到 {m_11['unres']} 笔，"
-      f"命中率从 {100*m_15['obs']:.1f}% 变成 {100*m_11['obs']:.1f}%，"
-      f"均净R 从 {m_15['avg_net']:+.3f} 变成 {m_11['avg_net']:+.3f}。"
-      "**方向没有翻转**，所以主表的剔除不是结论的来源。"
-      f"⚠ 1m 只覆盖 {len(DS_1M.rows_by_day)} 天，这一行只用来验证口径，不用来读水平。")
+    A("**纪律 2 的复核，以及一个必须说清楚的发现。**")
+    A()
+    A(f"主表 {m_all['n_all']} 笔里未判定 {m_all['unres']} 笔，"
+      f"**其中同根歧义只有 {m_all['amb']} 笔（{100*m_all['amb']/max(1,m_all['n_all']):.1f}%），"
+      f"其余 {m_all['tmo']} 笔是当日收盘前两边都没碰到**。"
+      "这两种未判定完全不是一回事：前者是分辨率缺陷（换更细的子 K 能救），"
+      "后者是行情本身没走完（换多细的子 K 都救不了）。")
+    A()
+    A(f"为什么同根歧义这么少：本构造的止损距离约 {m_all['risk']:.3f} ATR、"
+      f"止损到目标的总跨度中位 {(1+m_all['ts'])*m_all['risk']:.2f} ATR，"
+      "一根 5m K 很少能一口气吃掉整个跨度。所以——")
+    A()
+    A(f"> **在有 1m 数据的 {len(DS_1M.rows_by_day)} 天上，5m 判路径与 1m 子 K 判路径"
+      f"给出的结果逐笔完全一致**（未判定 {m_15['unres']} → {m_11['unres']}，"
+      f"其中同根歧义 {m_15['amb']} → {m_11['amb']}；命中率 {100*m_15['obs']:.1f}% → "
+      f"{100*m_11['obs']:.1f}%）。这不是「复核通过」的漂亮话，"
+      "而是因为**这段样本里根本没有同根歧义可拆**。")
+    A()
+    A("这条复核的真实结论只有一句：**S2 的构造在 5m 上不存在同根裁决问题**"
+      "（跨度远大于单根 K），所以纪律 2 在这里不是靠「换更细的 K」满足的，"
+      "是靠「入场价取收盘 + 跨度足够大」满足的。"
+      f"⚠ 1m 只覆盖 {len(DS_1M.rows_by_day)} 天，且这 18 天的均净R "
+      f"（{m_15['avg_net']:+.3f}）明显差于全样本（{m_all['avg_net']:+.3f}），"
+      "说明**这一小段样本本身就不具代表性**，绝不能拿它读水平。")
     A()
 
     A("### A.8 S2 判决")
@@ -1050,8 +1218,6 @@ def main() -> None:                                          # noqa: C901
             A(row_s2(f"N={N} · {'底' if kind=='bull' else '顶'}背离", m))
             cell()
     A()
-    zs_d1 = [DIV[k]["m"]["D1"]["z_geom"] for k in DIV
-             if DIV[k]["m"]["D1"]["n"] >= 20]
     A(f"8 个纯背离格子的 z_geom：最大 {max(zs_d1):+.2f}、"
       f"中位 {st.median(zs_d1):+.2f}、最小 {min(zs_d1):+.2f}；"
       f"越过 +1.96 的有 {sum(1 for z in zs_d1 if z > 1.96)} 个。")
@@ -1077,6 +1243,9 @@ def main() -> None:                                          # noqa: C901
                 if m["n"] == 0:
                     A(f"| {lbl} | 0 | – | – | – | – | – |")
                     continue
+                if m["z_geom"] == m["z_geom"]:
+                    ZREG.append((f"N={N}·{kind}·{lbl.replace('*','')}",
+                                 m["z_geom"]))
                 A(f"| {lbl} | {m['n']} | {m['unres']} | {pct(m['k'], m['n'])} | "
                   f"{100*m['null']:.1f}% | **{f(m['z_geom'])}** | "
                   f"{m['avg_net']:+.3f} |")
@@ -1089,88 +1258,166 @@ def main() -> None:                                          # noqa: C901
       "③ 两者**同时**成立时有没有超出各自单独贡献的额外效应（交互）。"
       "本项目过去只问了 ①，这一列的 ③ 是新的。")
     A()
-    A("| N | 方向 | ① 背离边际 Δ均净R (D1−D0) | z(命中率) | "
-      "② 在位边际 Δ均净R (L1−L0) | z(命中率) | ③ 交互 Δ均净R | ③ 交互 z | D1L1 的 n |")
-    A("|---|---|---|---|---|---|---|---|---|")
+    A("> **口径警告（本节最容易出错的地方）。** D1 与 D0 的**几何零假设不一样**："
+      "背离根的 N 根极值离收盘更近，止损更短，S/(S+T) 因此不同——实测两组的零假设"
+      "能差 7 个百分点。所以**不能比原始命中率**（原味两比例 z 会把几何差异当成信号，"
+      "这正是本项目铁律 1 要防的事）。下表的所有 z 都是**超额口径**："
+      "先逐笔减去自己的 S/(S+T)，再比两组的平均超额。")
+    A()
+    A("| N | 方向 | ① 背离边际 Δ均净R | **z(超额)** | 原味z(不可用) | "
+      "② 在位边际 Δ均净R | **z(超额)** | ③ 交互 Δ均净R | **③ z(超额)** | D1L1 的 n |")
+    A("|---|---|---|---|---|---|---|---|---|---|")
+    zd_all, zl_all, zis = [], [], []
     for N in (10, 15, 20, 30):
         for kind in ("bull", "bear"):
-            m = DIV[(N, kind)]["m"]
+            m, g = DIV[(N, kind)]["m"], DIV[(N, kind)]["g"]
             d_marg = m["D1"]["avg_net"] - m["D0"]["avg_net"]
-            zd = stats.two_proportion_z(m["D1"]["k"], m["D1"]["n"],
-                                        m["D0"]["k"], m["D0"]["n"])
+            zd = excess_z(g["D1"], g["D0"])
+            zd_naive = stats.two_proportion_z(m["D1"]["k"], m["D1"]["n"],
+                                              m["D0"]["k"], m["D0"]["n"])
             l_marg = m["L1"]["avg_net"] - m["L0"]["avg_net"]
-            zl = stats.two_proportion_z(m["L1"]["k"], m["L1"]["n"],
-                                        m["L0"]["k"], m["L0"]["n"])
+            zl = excess_z(g["L1"], g["L0"])
             inter = ((m["D1L1"]["avg_net"] - m["D1L0"]["avg_net"]) -
                      (m["D0L1"]["avg_net"] - m["D0L0"]["avg_net"]))
-            # 交互的 z：四格 log-odds 交互的标准误近似
-            zi = float("nan")
-            try:
-                ks = [m[c]["k"] for c in ("D1L1", "D1L0", "D0L1", "D0L0")]
-                ns = [m[c]["n"] for c in ("D1L1", "D1L0", "D0L1", "D0L0")]
-                if all(0 < k < n for k, n in zip(ks, ns)):
-                    lo = [math.log(k / (n - k)) for k, n in zip(ks, ns)]
-                    se = math.sqrt(sum(1 / k + 1 / (n - k)
-                                       for k, n in zip(ks, ns)))
-                    zi = (lo[0] - lo[1] - lo[2] + lo[3]) / se
-            except (ValueError, ZeroDivisionError):
-                pass
+            zi = excess_interaction_z(g["D1L1"], g["D1L0"],
+                                      g["D0L1"], g["D0L0"])
+            for lst, v in ((zd_all, zd), (zl_all, zl), (zis, zi)):
+                if v == v:
+                    lst.append(v)
             A(f"| {N} | {'底' if kind=='bull' else '顶'} | {f(d_marg, 3)} | "
-              f"{zd:+.2f} | {f(l_marg, 3)} | {zl:+.2f} | {f(inter, 3)} | "
-              f"{f(zi)} | {m['D1L1']['n']} |")
+              f"**{f(zd)}** | ~~{zd_naive:+.2f}~~ | {f(l_marg, 3)} | "
+              f"**{f(zl)}** | {f(inter, 3)} | **{f(zi)}** | "
+              f"{m['D1L1']['n']} |")
             cell(3)
     A()
-    zis = []
-    for N in (10, 15, 20, 30):
-        for kind in ("bull", "bear"):
-            m = DIV[(N, kind)]["m"]
-            ks = [m[c]["k"] for c in ("D1L1", "D1L0", "D0L1", "D0L0")]
-            ns = [m[c]["n"] for c in ("D1L1", "D1L0", "D0L1", "D0L0")]
-            if all(0 < k < n for k, n in zip(ks, ns)):
-                lo = [math.log(k / (n - k)) for k, n in zip(ks, ns)]
-                se = math.sqrt(sum(1 / k + 1 / (n - k) for k, n in zip(ks, ns)))
-                zis.append((lo[0] - lo[1] - lo[2] + lo[3]) / se)
-    if zis:
-        A(f"**8 个交互 z 里，|z|>1.96 的有 {sum(1 for z in zis if abs(z)>1.96)} 个**，"
-          f"范围 [{min(zis):+.2f}, {max(zis):+.2f}]。")
-    n_conj = [DIV[k]["m"]["D1L1"]["n"] for k in DIV]
-    A(f"**⚠ 样本量的诚实交代**：8 个合取格的 n 分别是 "
-      + "、".join(str(x) for x in n_conj) +
-      f"（中位 {int(st.median(n_conj))}）。"
-      "在这个量级上，一个真实存在的、中等大小的交互效应（比如命中率 +8pp）"
-      "**根本达不到显著**。所以本节的正确表述是：")
-    A()
-    A("> **「背离 ∧ 在位」这个合取在本样本上没有测出效应，但本样本也没有能力"
-      "测出一个中等大小的效应。这是『没测出来』，不是『测出来没有』。** "
-      "任何据此宣称 Saty 的「10m divergence at support」被证伪的说法都是过度解读；"
-      "同样，任何据此把合取写进 v15 当自动触发的做法也是没有依据的。")
-    A()
-    A(f"补一句方向性的观察，仅供后续设计参考（**不是结论**）：把 8 个格子的"
-      f"「在位」边际效应加总看方向——"
+    A(f"**① 背离这个标签：方向一致，强度弱。** 8 个格子的超额 z 范围 "
+      f"[{min(zd_all):+.2f}, {max(zd_all):+.2f}]，"
+      f">1.96 的只有 {sum(1 for z in zd_all if z > 1.96)} 个；"
       f"Δ均净R 为正的有 "
-      f"{sum(1 for N in (10,15,20,30) for k in ('bull','bear') if DIV[(N,k)]['m']['L1']['avg_net'] > DIV[(N,k)]['m']['L0']['avg_net'])}/8 个，"
-      f"「背离」边际为正的有 "
-      f"{sum(1 for N in (10,15,20,30) for k in ('bull','bear') if DIV[(N,k)]['m']['D1']['avg_net'] > DIV[(N,k)]['m']['D0']['avg_net'])}/8 个。")
+      f"{sum(1 for N in (10,15,20,30) for k in ('bull','bear') if DIV[(N,k)]['m']['D1']['avg_net'] > DIV[(N,k)]['m']['D0']['avg_net'])}/8 个。"
+      "**「8/8 同号」看着有力，但这 8 个格子远不是 8 个独立证据**——"
+      "四个 N 跑在同一批 10m K 上，事件高度重叠，同一段行情被数了四遍；"
+      "真正独立的只有「底 / 顶」这一个二分。按两个独立方向算，"
+      "这就是「两次同号」，不是「八次同号」。")
+    A()
+    A("**顺带看一眼「原味z」那一列。** 它系统性地大于超额 z"
+      f"（最夸张的一格 N=20·顶：原味 +3.00 vs 超额 "
+      f"{f(excess_z(DIV[(20,'bear')]['g']['D1'], DIV[(20,'bear')]['g']['D0']))}）。"
+      "多出来的那一截全是**几何差异**：背离根的 N 根极值离收盘更近、止损更短，"
+      "S/(S+T) 天然更高。如果本节按原味 z 写，就会得到「背离显著有效」的结论，"
+      "而那个结论是假的。**这一列留在表里，是本报告最值得记住的一张反面教材。**")
+    A()
+    A("**但「分离样本」不等于「能交易」。** 看 §B.2：8 个纯背离格子的均净R 里 "
+      f"{sum(1 for N in (10,15,20,30) for k in ('bull','bear') if DIV[(N,k)]['m']['D1']['avg_net'] < 0)}/8 是负的，"
+      "自身 z_geom 全部在 ±1.96 以内。也就是说背离的作用是"
+      "**把「无背离」那一类（价格创新极值且振荡器同步创新极值＝纯动量延续）排除掉**——"
+      "那一类做反向括号单亏得特别惨。**这是一条否决规则的证据，不是一条入场规则的证据。** "
+      "而一条把你从「亏很多」拉到「亏一点」的否决规则，不值得单独占一个入场条件。")
+    A()
+    A(f"**② 在位边际**：超额 z 范围 [{min(zl_all):+.2f}, {max(zl_all):+.2f}]，"
+      f">1.96 的有 {sum(1 for z in zl_all if z > 1.96)} 个；Δ均净R 为正的有 "
+      f"{sum(1 for N in (10,15,20,30) for k in ('bull','bear') if DIV[(N,k)]['m']['L1']['avg_net'] > DIV[(N,k)]['m']['L0']['avg_net'])}/8 个。"
+      "方向一致但强度低，且 L0（不在位）那一类的 n 只有个位数到二十几，"
+      "所以这个边际本身就是靠一个很小的对照组撑起来的。")
+    A()
+    if zis:
+        A(f"**③ 交互——这才是「合取」这个词真正要问的东西。** "
+          f"{len(zis)} 个可算的交互 z 范围 [{min(zis):+.2f}, {max(zis):+.2f}]，"
+          f"|z|>1.96 的有 {sum(1 for z in zis if abs(z) > 1.96)} 个，"
+          f"符号 {sum(1 for z in zis if z > 0)} 正 / {sum(1 for z in zis if z < 0)} 负。"
+          "**没有交互的证据。**")
+    A()
+    n_conj = [DIV[k]["m"]["D1L1"]["n"] for k in DIV]
+    A(f"**⚠ 但「没有交互的证据」离「有证据说没有交互」很远。** "
+      f"8 个合取格的 n 分别是 " + "、".join(str(x) for x in n_conj) +
+      f"（中位 {int(st.median(n_conj))}），对照格 D1L0 的 n 只有 "
+      + "、".join(str(DIV[k]["m"]["D1L0"]["n"]) for k in DIV) + "。"
+      "交互项的标准误由**最小的那个格子**决定，所以本设计的检验力实际上被 "
+      f"D1L0 的十几笔锁死了。粗算：在 n≈15 的对照格下，要让交互 z 越过 1.96，"
+      "交互效应得大到 25 个百分点以上——那已经不是「中等效应」，是「奇迹」。")
+    A()
+    A("> 所以本节的正确表述是：**「背离 ∧ 在位」这个合取在本样本上没有测出额外效应，"
+      "而本样本也没有能力测出一个中等大小的额外效应。这是『没测出来』，"
+      "不是『测出来没有』。** 任何据此宣称 Saty 的「10m divergence at support」"
+      "被证伪的说法都是过度解读；同样，任何据此把合取写进 v15 当自动触发的做法"
+      "也同样没有依据。这一条是本报告唯一一处诚实的「我不知道」。")
+    A()
+    A("**这个缺口要怎么补**（写给下一轮）：交互检验的瓶颈是 D1L0（背离但不在位）"
+      f"太少——因为具名位一天有 17 条，±{AT_LEVEL} ATR 的口袋几乎盖满了全天价格区间"
+      f"（实测 {100*len(DIV[(10,'bull')]['g']['L1'])/max(1,len(DIV[(10,'bull')]['g']['ALL'])):.0f}% "
+      "的极值都算「在位」）。要让这个检验有力量，得先把「在位」定义收紧到"
+      "真正稀缺的程度（比如只认 0.382/0.618，或把口袋压到 0.03 ATR），"
+      "或者换更长的样本。**在那之前，不要再报一次这个交互并假装它说明了什么。**")
     A()
 
     A("### B.5 S3 判决")
     A()
-    A("1. **纯背离（单项）：不值得写进指标。** "
-      f"8 个格子 z_geom 最大 {max(zs_d1):+.2f}，"
-      "而且 §B.3 的 D0 行（价格创新极值但 Phase **也**创新极值，即完全没有背离）"
-      "打出来的括号单与 D1 行没有可辨差别——这套设置的内容几乎都在"
-      "「N 根新极值」这个共同底盘里。")
-    A(f"2. **合取（背离 ∧ 在位）：样本不够，不下结论。** 8 个合取格中位 n = "
-      f"{int(st.median(n_conj))}，交互 z 全部在 ±2 以内。"
+    A(f"1. **纯背离（单项）：作为入场条件不成立。** 8 个格子自身的 z_geom 最大 "
+      f"{max(zs_d1):+.2f}（Bonferroni 门槛见文末），"
+      f"均净R {sum(1 for N in (10,15,20,30) for k in ('bull','bear') if DIV[(N,k)]['m']['D1']['avg_net'] < 0)}/8 为负。"
+      "**打不过自己的几何零假设。**")
+    A("2. **但要更正一句话**：不能说「背离这个条件没把任何信息加进来」。"
+      "§B.4 的超额口径显示背离组与无背离组**确实可分**"
+      f"（8 个格子超额 z 最大 {max(zd_all):+.2f}，Δ均净R 8/8 同号）。"
+      "只是这个信息的形状是**否决**而不是**入场**："
+      "背离的价值在于排除掉「振荡器同步创新极值」那一类纯动量延续，"
+      "而排除之后剩下的仍然不赚钱。")
+    A(f"3. **合取（背离 ∧ 在位）：检验力不足，不下结论。** 交互 z 全部在 ±2 以内，"
+      f"但对照格 D1L0 只有十几笔，本设计根本测不出中等大小的交互。"
       "**这是本报告唯一一处「我不知道」，并且是诚实的不知道。**")
-    A("3. **能做什么**：把 10m Phase 背离画成一盏提示灯（画出来、不触发），"
-      "并且在灯亮时标注它离最近具名位多远——这样用户自己在盘面上判断，"
-      "同时也在为「合取」这个假设积累前向样本。"
-      "要把它做成自动入场条件，需要真实 CAPITALCOM:SPX500 历史 + 明显更长的样本。")
-    A("4. **不能做什么**：不能用本节去反驳用户的手工记录。"
+    A("4. **能做什么**：把 10m Phase 背离画成一盏提示灯（画出来、不触发），"
+      "并在灯亮时标注它离最近具名位多远。这既让用户自己在盘面上判断，"
+      "也在为「合取」这个假设积累前向样本——本项目现在最缺的就是这个。")
+    A("5. **不能做什么**：不能用本节去反驳用户的手工记录。"
       "他的背离是看图判断的（含摆动结构、当日故事、他敢不敢下手），"
       "本节测的是一个**机械代理**；代理无效不蕴含原物无效。"
       "反过来也成立：代理无效时把它做成自动触发是没有依据的。")
+    A()
+
+    # ═══════════════════════ 与假设相反的格子 ═══════════════════════
+    A("---")
+    A()
+    A("## C. 与假设相反 / 意料之外的格子（纪律 7）")
+    A()
+    A("本节单列所有「和本报告主结论唱反调」的格子。它们**不是结论**——"
+      "在文末那个 family size 下，单个 |z|<3.5 的格子不构成证据——"
+      "但把它们藏起来会让报告变成一份辩护词。")
+    A()
+    A("| 出处 | 格子 | n | z_geom | 均净R | 为什么它和主结论矛盾 |")
+    A("|---|---|---|---|---|---|")
+    A(f"| §A.2 | 第 1 次触及 | {m_k['1']['n']} | {f(m_k['1']['z_geom'])} | "
+      f"{m_k['1']['avg_net']:+.3f} | **k 桶里唯一均净R 为正的一格，"
+      f"而它恰好是用户认为最不该做的那一次。** 用户猜「碰两次以后才考虑」，"
+      f"数据的方向是反的。 |")
+    for tp in TYPE_ORDER:
+        m = summarize([t for t in TR if t["ep"].ltype == tp], TR)
+        if m["n"] >= 30 and m["z_geom"] > 1.5:
+            A(f"| §A.6 | 位类型 {tp} | {m['n']} | {f(m['z_geom'])} | "
+              f"{m['avg_net']:+.3f} | S2 整体没信号，这一类却是正的。"
+              f"8 个位类型里挑出来的，未校正。 |")
+    for kind in PLB_KINDS:
+        if len(set(PLB[kind]["z"])) <= 1:
+            continue
+        p = prc(PLB[kind]["net"], m_all["avg_net"])
+        if p < 50:
+            A(f"| §A.5 | 安慰剂「{kind}」 | {REPS} 次重抽 | – | "
+              f"零分布均值 {mean(PLB[kind]['net']):+.3f} | "
+              f"**真具名位的均净R 只排在这类随机位的第 {p:.0f} 百分位**——"
+              f"即多数随机价位做得比真具名位还好。不支持「具名位有特殊性」。 |")
+    for N in (10, 15, 20, 30):
+        for kind in ("bull", "bear"):
+            mm = DIV[(N, kind)]["m"]
+            for key, lbl in (("D1L1", "背离∧在位"), ("D0L1", "无背离∧在位")):
+                if mm[key]["n"] >= 25 and abs(mm[key]["z_geom"]) > 1.8:
+                    A(f"| §B.3 | N={N}·{'底' if kind=='bull' else '顶'}·{lbl} | "
+                      f"{mm[key]['n']} | {f(mm[key]['z_geom'])} | "
+                      f"{mm[key]['avg_net']:+.3f} | "
+                      f"{'合取格里最好的一个，但 32 个 2×2 格子里挑的。' if mm[key]['z_geom'] > 0 else '负得比其余格子明显——这是「无背离」那一类特别差的直接证据，支持 §B.4 的否决式读法。'} |")
+    A()
+    A("**怎么读这张表。** 第一行（第 1 次触及最好）和倒数几行（无背离格特别差）"
+      "是两条方向清楚、机制上讲得通、但强度不够的线索；"
+      "中间那些（某个位类型、某个安慰剂）更像是格子挑出来的噪声。"
+      "本报告不基于其中任何一条提出建议。")
     A()
 
     # ═══════════════════════ 家族 / 缺陷 ═══════════════════════
@@ -1184,10 +1431,24 @@ def main() -> None:                                          # noqa: C901
     A(f"- 只算 S3 的 8 个纯背离格：|z| > **{_norm_q(1 - 0.025 / 8):.2f}**；"
       f"算上 2×2 的 32 个格子：|z| > **{_norm_q(1 - 0.025 / 32):.2f}**。")
     A()
-    A("**常规 |z| > 1.96 在这个 family size 下没有意义。** "
-      "本报告全部格子里最大的 |z_geom| 是 "
-      f"**{max(abs(x) for x in [m_all['z_geom']] + [m_k[k]['z_geom'] for k in K_ORDER if m_k[k]['n'] >= 30] + zs_d1 if x == x):.2f}**，"
-      "连未校正的门槛都没稳定越过，更不用说 Bonferroni。"
+    thr = _norm_q(1 - 0.025 / max(CELLS, 1))
+    top = sorted(ZREG, key=lambda x: -abs(x[1]))[:5]
+    A(f"**登记在案的 z_geom 共 {len(ZREG)} 个**（每报一个就登记一个，"
+      "所以下面这个「最大」是真的最大，不是挑着算的）。绝对值最大的五个：")
+    A()
+    for lbl, z in top:
+        A(f"- {lbl}：z_geom = **{z:+.2f}**"
+          f"{'　← 越过全报告 Bonferroni 门槛' if abs(z) > thr else ''}")
+    A()
+    n_over = sum(1 for _, z in ZREG if abs(z) > 1.96)
+    A(f"未校正 |z|>1.96 的有 **{n_over} 个**；按纯随机预期，"
+      f"{len(ZREG)} 个格子本来就该出现约 {0.05*len(ZREG):.1f} 个。"
+      f"**实际 {n_over} 个，和随机没有区别。** "
+      f"越过全报告 Bonferroni 门槛 {thr:.2f} 的有 "
+      f"**{sum(1 for _, z in ZREG if abs(z) > thr)} 个**。")
+    A()
+    A("**结论：本报告没有任何一个候选构成证据。** "
+      "常规 |z| > 1.96 在这个 family size 下不是发现，是噪声的正常产量。"
       "加上本项目前面几轮，累计检视格子数已到四位数量级。")
     A()
     A("## 已知缺陷与不确定性")
@@ -1202,16 +1463,23 @@ def main() -> None:                                          # noqa: C901
       "**不是独立样本**（本项目老坑 P3），只能做方向性对照。"
       "本轮没有任何独立时间段的验证——S2 的机制（±0.03 ATR 的带）"
       "在 1h 上没有分辨率，所以 730 天那份数据用不上。")
-    A(f"3. **1m 只有 {len(DS_1M.rows_by_day)} 天**，只够验证「5m 同根歧义剔除」"
-      "有没有制造结论，不够支撑独立结论。")
+    A(f"3. **1m 只有 {len(DS_1M.rows_by_day)} 天，而且这次复核实际上是空转。** "
+      f"这 {len(DS_1M.rows_by_day)} 天里 5m 判路径产生的同根歧义是 "
+      f"{m_15['amb']} 笔，所以「换 1m 子 K」逐笔没有改变任何结果（§A.7）。"
+      "这**不能**被读成「1m 复核通过」——它只说明 S2 的构造在 5m 上"
+      "本来就没有同根裁决问题。真正需要 1m 的是 S3 那种止损很近的构造，"
+      "而 S3 用的是 10m/5m，已经合规。")
     A(f"4. **穿透深度有天花板**：事件在收盘离开 {OUT_BAND}·ATR 时结束，"
       f"所以被拒绝事件的深度落在 [0, ~{OUT_BAND}] ATR。"
       "「深度递减」测的是「扎进去的那一点点在不在缩」，"
       "不是用户看图时感觉到的那种「一波比一波弱」的大结构。**两者不是同一件事。**")
-    A("5. **S2 的路径判定与 setup 同在 5m**（纪律 2 的例外）。"
-      "±0.03 ATR 的带在 10m 上无法分辨触及与穿过，所以触及只能在 5m 上数。"
-      "补偿措施：入场价一律取 K 线收盘（不存在同根裁决入场），"
-      "同根同时碰到止损与目标一律记未判定剔除，并在 §A.7 用 1m 子 K 复核。")
+    A("5. **S2 的路径判定与 setup 同在 5m**（纪律 2 的例外，必须写明）。"
+      "±0.03 ATR 的带在 10m 上无法分辨「触及」与「穿过」，所以触及只能在 5m 上数。"
+      "三条补偿：① 入场价一律取 K 线收盘，所以**入场本身不存在同根裁决**；"
+      f"② 止损到目标的跨度中位 {(1+m_all['ts'])*m_all['risk']:.2f} ATR，"
+      f"远大于单根 5m K，实测同根歧义只占 {100*m_all['amb']/max(1,m_all['n_all']):.1f}%；"
+      "③ 这些歧义笔一律剔除并单列成表内一栏。"
+      "**即便如此，这仍然是一个例外，不是一个合规的做法。**")
     A("6. **S3 的背离只有一种机械定义**（N 根新极值 + 振荡器未同步）。"
       "真实的图形背离还要求第二个低点本身是一个摆动低、两个低点之间要有足够间隔、"
       "背离段不能太长等等。这些都没有测。")

@@ -284,3 +284,12 @@ D 与 A 差在两处：**选哪根 K 入场**，和**止损用什么**。把 v14
 
 **一句话：你的直觉没错，这些复杂度在这份数据上是纯成本。但把它砍到四条规则也不会赚钱——因为亏的不是复杂度，是这个入场本身。**
 
+
+======================================================================
+SUMMARY FOR RETURN VALUE
+A · 极简版                    n=1722  hit=55.9% null=56.4% z=-0.55 avgR=-0.011 avgNet=-0.094 totNet=-162.4 dd=-171.3 avgMoney=-0.0085 totMoney=-14.60
+B · 去状态层                   n=1729  hit=31.7% null=30.8% z=+0.86 avgR=+0.037 avgNet=-0.099 totNet=-171.3 dd=-184.6 avgMoney=-0.0049 totMoney=-8.40
+C · 去位置层                   n=301   hit=58.5% null=60.3% z=-0.75 avgR=-0.030 avgNet=-0.105 totNet=-31.5 dd=-34.3 avgMoney=-0.0106 totMoney=-3.18
+D · v14 全套                 n=516   hit=54.1% null=57.7% z=-1.88 avgR=-0.128 avgNet=-0.203 totNet=-105.0 dd=-107.7 avgMoney=-0.0108 totMoney=-5.58
+D · v14 线上排队               n=461   hit=54.0% null=56.7% z=-1.30 avgR=-0.115 avgNet=-0.195 totNet=-89.7 dd=-91.8 avgMoney=-0.0078 totMoney=-3.61
+E · 纯随机                    n=5965  hit=55.5% null=55.3% z=+0.43 avgR=-0.002 avgNet=-0.085 totNet=-505.0 dd=-512.2 avgMoney=-0.0060 totMoney=-35.68

@@ -756,6 +756,82 @@ def main() -> None:
     w()
     w("均净R = 每笔各自扣 0.6 点 ÷ 该笔风险后的 R 的**均值**（不是总毛R/n 减常数）。")
     w()
+    # ── S2.2b: does the R gradient survive the money column? ────────────────
+    w("### S2.2b 一致性自查：赛跑说「各档一样」，R 账说「各档不同」，谁在撒谎")
+    w()
+    w("上面两张表在主样本 B 上互相矛盾，必须当场处理，不能留到判决段：")
+    w()
+    w("- **几何赛跑**（纯括号，删掉 13 线离场）的 z_geom 逐档是 "
+      "−0.68 / −0.69 / −0.58 / −0.22 / −0.75——**平的**，没有梯度；")
+    w("- **R 账**的均R 逐档是 +0.019 / +0.000 / −0.181 / −0.170 / −0.120——"
+      "看起来低档明显更好。")
+    w()
+    w("赛跑只反映**入场位置**（保护位 vs T1 谁先到），R 账还混进了"
+      "**13 线离场规则**和**R 的分母（风险距离）**。"
+      "既然赛跑是平的，那个 R 梯度就**不可能**是入场位置造成的。"
+      "下表把分母摊开：`钱 = R × 风险/日ATR`，这一栏对风险距离免疫。")
+    w()
+    w("`t(净R)` 与 `t(净钱)` 都是该档 vs **其余四档**的 Welch t，"
+      "尺度已经归一，可以直接比大小。")
+    w()
+    w("| 数据集 | signed phase 档 | n | 均风险/ATR | 均净R | t(净R) | "
+      "均净钱(ATR) | t(净钱) | 13线离场占比 |")
+    w("|---|---|---|---|---|---|---|---|---|")
+    money_check: list[tuple[str, float, float]] = []
+    for ds in sets:
+        rd = [r for r in readings[ds.short] if r.p_exec is not None]
+        if len(rd) < 40:
+            continue
+        vals = sorted(r.p_exec for r in rd)
+        cuts = [qtile(vals, f) for f in (0.2, 0.4, 0.6, 0.8)]
+        bounds = [-1e9] + cuts + [1e9]
+
+        def net_money(t: Trade) -> float:
+            return money(t) - (SPREAD / t.atr if t.atr else 0.0)
+
+        groups = [[r.t for r in rd if bounds[qi] <= r.p_exec < bounds[qi + 1]]
+                  for qi in range(5)]
+        for qi, g in enumerate(groups):
+            if not g:
+                continue
+            rest = [t for qj, gg in enumerate(groups) if qj != qi for t in gg]
+            nr = [net_r(t) for t in g]
+            mo = [net_money(t) for t in g]
+            ra = [t_risk_atr(t) for t in g]
+            t_r = welch_t(nr, [net_r(t) for t in rest])
+            t_m = welch_t(mo, [net_money(t) for t in rest])
+            struct = sum(1 for t in g if t.exit_reason == "STRUCT") / len(g)
+            FAM.cell()
+            FAM.z(t_m, f"{ds.short} Q{qi+1} t(净钱)")
+            money_check.append((f"{ds.short} Q{qi+1}", t_r, t_m))
+            w(f"| {ds.short} | Q{qi+1} | {len(g)} | {sum(ra)/len(ra):.3f} | "
+              f"{fmt(sum(nr)/len(nr))} | {fmt(t_r, 2)} | "
+              f"{fmt(sum(mo)/len(mo), 4)} | {fmt(t_m, 2)} | {100*struct:.0f}% |")
+    w()
+    if money_check:
+        shrunk = sum(1 for _, a, b in money_check
+                     if a == a and b == b and abs(b) < abs(a))
+        mr = max((abs(a) for _, a, b in money_check if a == a), default=0.0)
+        mm = max((abs(b) for _, a, b in money_check if b == b), default=0.0)
+        w(f"**读数**：{len(money_check)} 个档里有 **{shrunk} 个**在换成「钱」之后 "
+          f"|t| 变小。全部档中 |t(净R)| 最大 **{mr:.2f}**，"
+          f"|t(净钱)| 最大 **{mm:.2f}**。")
+        w()
+    w("**结论（必须原样说，不能只说一半）**：R 梯度**部分**是分母效应，"
+      "但**不是全部**——换成对风险距离免疫的「钱」栏之后梯度缩水却没有消失。"
+      "同时 `13线离场占比` 这一栏暴露了真正的机制："
+      "低 phase 档有 **91–92%** 的交易由 13 线离场（小赢小输了事），"
+      "中间档只有 **64–73%**，其余的是被保护位打掉。"
+      "也就是说，phase 分档在 v14 里主要改变的是**离场路径的组成**，"
+      "而不是入场位置的优劣——这正好解释了"
+      "「几何赛跑平、R 账有梯度」的矛盾。")
+    w()
+    w("**对否决器的直接含义**：一个按 phase 切的闸门，"
+      "改的是「哪一类离场占多数」，不是「入场位置好不好」。"
+      "它和 13 线离场规则纠缠在一起，"
+      "所以它的任何 R 收益都**不能**在换了离场规则之后还指望存在。")
+    w()
+
     chase_ts: list[tuple[str, float]] = []
     for ds in sets:
         rd = [r for r in readings[ds.short] if r.p_exec is not None]
