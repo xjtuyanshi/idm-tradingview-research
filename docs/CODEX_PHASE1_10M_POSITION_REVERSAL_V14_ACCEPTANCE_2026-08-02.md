@@ -58,6 +58,25 @@ git diff --check: PASS
 
 130 个 skip 都有仓库内明确理由：私有 TradingView fixture、外部 CSV 或未随公开源码分发的历史证据；没有失败项。
 
+## ChatGPT Pro 最终外部复核
+
+ChatGPT Pro 基于它先前的 Pro130 完整包，对 outward alert 首层又完成了一次最小 Guardfix：owner/status、host/context、malformed fingerprint 和完整 current source surface 均按 fail-closed 处理。其最终包与补丁独立验收结果：
+
+```text
+Patch: 19,232 bytes
+  SHA-256 318c67899831de496865439d30c1afa38ff13dca1b8bf44c95fe75d829bf8c89
+Complete ZIP: 117,020 bytes
+  SHA-256 d257025bfe7a1a3fa86205fc30676203bbd687a36e79da1fee643f7ad7b910df
+Validation log: 3,670 bytes
+  SHA-256 3fce74c0c382da2e6d7f21b06b69bd5b82e951aa0de9e930fb76a42d7d59c7c1
+Fresh ZIP targeted tests: 132 passed
+Fresh Pro130 + patch targeted tests: 132 passed
+Patch-applied tree vs final ZIP: byte-identical
+ZIP CRC/path traversal/symlink/encryption/high-confidence secret scan: PASS
+```
+
+该 Pro 包的 Pine 是它实际收到的旧基线 `5c8ee32b…`，不是本仓库最终提交的 `5beaa282…`。因此没有将 Pro 包或补丁覆盖到本仓库；本仓库保留已经通过本地 132 项专项测试、全仓门禁、Trader 复审和对抗复审的最终版本。Pro132 在这里用作独立的同语义复核证据，不作为新的源码权威。
+
 ## 冻结身份
 
 ```text
