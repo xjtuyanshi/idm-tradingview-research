@@ -4,8 +4,10 @@ This module implements only the first independent producer increment:
 
     prior-published named band -> confirmed 10m reaction -> immutable opportunity
 
-It does not consume 3-minute data, VIX, divergence, forming MTF values, alerts,
-orders, strategies, or profitability assumptions.  A touch is observation only.
+It does not consume 3-minute data, VIX, divergence, forming MTF values, orders,
+strategies, or profitability assumptions.  A touch is observation only.  The
+module also owns the outward ``alertcondition`` decision contract so the Pine
+surface cannot promote a non-READY reaction into an actionable alert.
 An accepted break terminates the episode and cannot be backfilled by a later
 reclaim.  The engine is deterministic, confirmed-only, and read-only.
 """
@@ -20,7 +22,7 @@ from math import ceil, floor, isfinite
 from types import MappingProxyType
 from typing import Final, Iterable, Mapping, Sequence
 
-PROTOCOL_VERSION: Final[str] = "phase1-10m-position-reversal-1.3"
+PROTOCOL_VERSION: Final[str] = "phase1-10m-position-reversal-1.4"
 LANE_ID: Final[str] = "POSITION_REVERSAL"
 EXPECTED_SYMBOL: Final[str] = "CAPITALCOM:SPX500"
 BAR_INTERVAL_MS: Final[int] = 600_000
@@ -47,9 +49,21 @@ _IDENTITY_COMPONENT_SAFE_SET: Final[frozenset[str]] = frozenset(
 )
 MARKER_TEXTS: Final[tuple[str, ...]] = (
     "支撑观察",
-    "反弹确认",
+    "多头确认",
     "阻力观察",
-    "压回确认",
+    "空头确认",
+)
+ALERT_TITLES: Final[tuple[str, ...]] = (
+    "位置反转｜支撑观察",
+    "位置反转｜阻力观察",
+    "位置反转｜多头确认",
+    "位置反转｜空头确认",
+)
+ALERT_MESSAGES: Final[tuple[str, ...]] = (
+    '位置反转｜支撑观察｜标的={{exchange}}:{{ticker}}｜周期={{interval}}｜K线时间(UTC)={{time}}｜开={{open}} 高={{high}} 低={{low}} 收={{close}}｜位置={{plot("PR_BAND_LOWER")}}–{{plot("PR_BAND_UPPER")}}｜仅观察，不是入场；位置计划尚未接入3m',
+    '位置反转｜阻力观察｜标的={{exchange}}:{{ticker}}｜周期={{interval}}｜K线时间(UTC)={{time}}｜开={{open}} 高={{high}} 低={{low}} 收={{close}}｜位置={{plot("PR_BAND_LOWER")}}–{{plot("PR_BAND_UPPER")}}｜仅观察，不是入场；位置计划尚未接入3m',
+    '位置反转｜多头确认｜标的={{exchange}}:{{ticker}}｜周期={{interval}}｜K线时间(UTC)={{time}}｜开={{open}} 高={{high}} 低={{low}} 收={{close}}｜位置={{plot("PR_BAND_LOWER")}}–{{plot("PR_BAND_UPPER")}}｜触发={{plot("PR_TRIGGER")}}｜保护={{plot("PR_INVALIDATION")}}｜目标={{plot("PR_TARGET")}}｜空间={{plot("PR_SPACE_R")}}R｜条件已确认，不是订单；位置计划尚未接入3m，R3.2反向或已有计划时不执行',
+    '位置反转｜空头确认｜标的={{exchange}}:{{ticker}}｜周期={{interval}}｜K线时间(UTC)={{time}}｜开={{open}} 高={{high}} 低={{low}} 收={{close}}｜位置={{plot("PR_BAND_LOWER")}}–{{plot("PR_BAND_UPPER")}}｜触发={{plot("PR_TRIGGER")}}｜保护={{plot("PR_INVALIDATION")}}｜目标={{plot("PR_TARGET")}}｜空间={{plot("PR_SPACE_R")}}R｜条件已确认，不是订单；位置计划尚未接入3m，R3.2反向或已有计划时不执行',
 )
 
 CANONICAL_CONTRACT: Final[Mapping[str, object]] = MappingProxyType(
@@ -70,6 +84,18 @@ CANONICAL_CONTRACT: Final[Mapping[str, object]] = MappingProxyType(
         "atr_source_kind_allowlist": ("PREVIOUS_COMPLETED_DAILY_ATR",),
         "atr_source_timeframe": DAILY_TIMEFRAME,
         "marker_texts": MARKER_TEXTS,
+        "marker_policy": (
+            "watch-current-bar-plus-optional-history-default-off;"
+            "ready-history-default-on;non-ready-reaction-hidden"
+        ),
+        "alert_titles": ALERT_TITLES,
+        "alert_messages": ALERT_MESSAGES,
+        "alert_count": 4,
+        "alert_pulse_policy": "current-bar-event-plus-exact-state-reason-identity",
+        "alert_delivery_policy": (
+            "published-and-known-at-or-before-bar-open;relevant-source-target-atr-"
+            "valid-and-fresh-through-time-close"
+        ),
         "source_stability": "PRIOR_PUBLISHED",
         "target_router": "touch-time-freeze-nearest-first-no-skip",
         "target_consumed_scope": "touch-through-reaction-episode-extremes",
@@ -94,8 +120,13 @@ CANONICAL_CONTRACT: Final[Mapping[str, object]] = MappingProxyType(
         "atr_provenance_policy": "previous-completed-daily-source-bar-metadata",
         "pine_reload_policy": "full-history-recompute-not-append-only",
         "recovery_policy": "first-valid-contiguous-bar-is-eligible",
-        "card_default": False,
+        "card_default": True,
         "card_position": "bottom_right",
+        "frozen_band_default": True,
+        "duplicate_policy": "exact-timestamp-no-op;backward-and-gap-reset-separate",
+        "current_plan_lifecycle": (
+            "active-until-invalidation-priority-over-target-or-expiry-or-data-reset"
+        ),
         "same_side_multi_touch_policy": "MULTIPLE_SAME_SIDE_NO_PERMISSION",
     }
 )
@@ -192,6 +223,33 @@ class ReasonCode(str, Enum):
     MULTIPLE_SAME_SIDE_NO_PERMISSION = "MULTIPLE_SAME_SIDE_NO_PERMISSION"
 
 
+class PlanStatus(str, Enum):
+    NONE = "NONE"
+    ACTIVE = "ACTIVE"
+    INVALIDATED = "INVALIDATED"
+    TARGET_REACHED = "TARGET_REACHED"
+    EXPIRED = "EXPIRED"
+    SUPPRESSED = "SUPPRESSED"
+
+
+class AlertKind(str, Enum):
+    NONE = "NONE"
+    SUPPORT_WATCH = "SUPPORT_WATCH"
+    RESISTANCE_WATCH = "RESISTANCE_WATCH"
+    LONG_READY = "LONG_READY"
+    SHORT_READY = "SHORT_READY"
+
+
+class AlertDecisionReason(str, Enum):
+    FIRE = "FIRE"
+    NO_CURRENT_EVENT = "NO_CURRENT_EVENT"
+    UNCONFIRMED_OR_INVALID = "UNCONFIRMED_OR_INVALID"
+    EVENT_GUARD_FAILED = "EVENT_GUARD_FAILED"
+    SOURCE_NOT_DELIVERABLE_AT_CLOSE = "SOURCE_NOT_DELIVERABLE_AT_CLOSE"
+    TARGET_NOT_DELIVERABLE_AT_CLOSE = "TARGET_NOT_DELIVERABLE_AT_CLOSE"
+    ATR_NOT_DELIVERABLE_AT_CLOSE = "ATR_NOT_DELIVERABLE_AT_CLOSE"
+
+
 class SourceRejection(str, Enum):
     DISABLED = "DISABLED"
     IDENTITY_MISSING = "IDENTITY_MISSING"
@@ -212,6 +270,19 @@ class SourceRejection(str, Enum):
     ATR_SOURCE_BAR_INVALID = "ATR_SOURCE_BAR_INVALID"
     ATR_SOURCE_BAR_NOT_COMPLETED = "ATR_SOURCE_BAR_NOT_COMPLETED"
     DUPLICATE_IDENTITY = "DUPLICATE_IDENTITY"
+
+
+FATAL_SOURCE_REJECTIONS: Final[frozenset[SourceRejection]] = frozenset(
+    {
+        SourceRejection.IDENTITY_MISSING,
+        SourceRejection.IDENTITY_NON_CANONICAL,
+        SourceRejection.IDENTITY_GRAMMAR_INVALID,
+        SourceRejection.SOURCE_KIND_NOT_ALLOWED,
+        SourceRejection.VALID_UNTIL_INVALID,
+        SourceRejection.EXPIRED,
+        SourceRejection.STALE,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -477,6 +548,16 @@ class OpportunityPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class OutwardAlertDecision:
+    alert_kind: AlertKind
+    fire: bool
+    decision_reason: AlertDecisionReason
+    source_delivery_ok: bool
+    target_delivery_ok: bool
+    atr_delivery_ok: bool
+
+
+@dataclass(frozen=True, slots=True)
 class Observation:
     protocol_version: str
     lane_id: str
@@ -504,6 +585,11 @@ class Observation:
     marker_price: float | None
     target_candidate: TargetCandidate | None
     opportunity: OpportunityPayload | None
+    active_opportunity: OpportunityPayload | None
+    plan_status: PlanStatus
+    plan_end_time_ms: int | None
+    source_fingerprint: str | None
+    atr_fingerprint: str | None
     source_rejections: tuple[str, ...]
 
 
@@ -692,6 +778,298 @@ def _atr_rejection(atr: PriorAtrContext, bar_open_ms: int) -> SourceRejection | 
     return None
 
 
+def _band_deliverable_at_close(band: NamedBand, bar: TenMinuteBar) -> bool:
+    """Require bar-open causality and continued validity through confirmation.
+
+    ``published_at`` and ``level_known_at`` are always checked against the bar
+    open by ``_band_rejection``.  The close check is an additional delivery
+    gate; it never makes information first published inside the bar causal.
+    """
+
+    try:
+        if _band_rejection(band, bar.timestamp_ms) is not None:
+            return False
+        usable_at = max(band.published_at_ms, band.level_known_at_ms)
+        return (
+            bar.visible_at_ms < band.valid_until_ms
+            and bar.visible_at_ms - usable_at <= band.stale_after_ms
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def _atr_deliverable_at_close(atr: PriorAtrContext, bar: TenMinuteBar) -> bool:
+    """ATR counterpart to ``_band_deliverable_at_close``."""
+
+    try:
+        if _atr_rejection(atr, bar.timestamp_ms) is not None:
+            return False
+        usable_at = max(atr.published_at_ms, atr.known_at_ms)
+        return (
+            bar.visible_at_ms < atr.valid_until_ms
+            and bar.visible_at_ms - usable_at <= atr.stale_after_ms
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def _matching_band(
+    bands: Sequence[NamedBand],
+    *,
+    source_id: str,
+    source_version: str,
+    effective_fingerprint: str,
+) -> NamedBand | None:
+    for band in bands:
+        try:
+            identity_matches = (
+                band.canonical_source_id == source_id
+                and band.canonical_source_version == source_version
+            )
+            fingerprint_matches = (
+                band.effective_fingerprint == effective_fingerprint
+            )
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if identity_matches and fingerprint_matches:
+            return band
+    return None
+
+
+def _outward_source_surface_ok(
+    bar: TenMinuteBar, bands: Sequence[NamedBand]
+) -> bool:
+    """Mirror Pine's full current source-surface gate without runtime history.
+
+    Fatal source defects on any enabled band disable all outward alerts.  Other
+    rejected extras remain excludable, matching the producer contract.  Among
+    the surviving bands, at least one valid identity must remain and duplicate
+    current identities are forbidden.
+    """
+
+    valid_identities: set[str] = set()
+    valid_count = 0
+    for band in bands:
+        try:
+            rejection = _band_rejection(band, bar.timestamp_ms)
+        except (AttributeError, TypeError, ValueError):
+            return False
+        if rejection is not None:
+            if rejection in FATAL_SOURCE_REJECTIONS:
+                return False
+            continue
+        try:
+            identity = band.identity
+        except (AttributeError, TypeError, ValueError):
+            return False
+        if identity in valid_identities:
+            return False
+        valid_identities.add(identity)
+        valid_count += 1
+    return valid_count > 0
+
+
+def decide_outward_alert(
+    observation: Observation,
+    bar: TenMinuteBar,
+    bands: Sequence[NamedBand],
+    atr: PriorAtrContext,
+) -> OutwardAlertDecision:
+    """Return the exact current-bar alertcondition decision.
+
+    The function intentionally consumes the current ``Observation`` pulse.  It
+    does not inspect a previous event, a latest-plan freshness flag, marker
+    visibility, or a persistent READY state.  Watch alerts require the touched
+    source and ATR to remain deliverable through ``time_close``.  READY alerts
+    additionally require the frozen nearest target to remain deliverable.
+    """
+
+    event_to_kind = {
+        Event.SUPPORT_WATCH: AlertKind.SUPPORT_WATCH,
+        Event.RESISTANCE_WATCH: AlertKind.RESISTANCE_WATCH,
+        Event.BOUNCE_CONFIRMED: AlertKind.LONG_READY,
+        Event.REJECTION_CONFIRMED: AlertKind.SHORT_READY,
+    }
+    alert_kind = event_to_kind.get(observation.event, AlertKind.NONE)
+    if alert_kind is AlertKind.NONE:
+        return OutwardAlertDecision(
+            alert_kind=AlertKind.NONE,
+            fire=False,
+            decision_reason=AlertDecisionReason.NO_CURRENT_EVENT,
+            source_delivery_ok=False,
+            target_delivery_ok=False,
+            atr_delivery_ok=False,
+        )
+    if not (
+        bar.symbol == EXPECTED_SYMBOL
+        and bar.timeframe_ms == BAR_INTERVAL_MS
+        and bar.is_standard
+        and _valid_ohlc(bar)
+        and _outward_source_surface_ok(bar, bands)
+        and bar.is_confirmed
+        and observation.protocol_version == PROTOCOL_VERSION
+        and observation.lane_id == LANE_ID
+        and observation.visible
+        and observation.data_valid
+        and observation.bar_time_ms == bar.timestamp_ms
+        and observation.visible_at_ms == bar.visible_at_ms
+    ):
+        return OutwardAlertDecision(
+            alert_kind=alert_kind,
+            fire=False,
+            decision_reason=AlertDecisionReason.UNCONFIRMED_OR_INVALID,
+            source_delivery_ok=False,
+            target_delivery_ok=False,
+            atr_delivery_ok=False,
+        )
+
+    watch_guard = (
+        observation.reason_code is ReasonCode.WATCH_ONLY
+        and observation.state is State.APPROACH
+        and observation.episode_id is not None
+        and observation.source_id is not None
+        and observation.source_version is not None
+        and observation.source_fingerprint is not None
+        and observation.atr_fingerprint is not None
+        and observation.watch_registered
+        and not observation.terminal_registered
+        and observation.opportunity is None
+        and (
+            (
+                alert_kind is AlertKind.SUPPORT_WATCH
+                and observation.source_role is BandRole.SUPPORT
+            )
+            or (
+                alert_kind is AlertKind.RESISTANCE_WATCH
+                and observation.source_role is BandRole.RESISTANCE
+            )
+        )
+    )
+    opportunity = observation.opportunity
+    ready_guard = (
+        observation.reason_code is ReasonCode.READY
+        and observation.state is State.READY
+        and opportunity is not None
+        and observation.plan_status is PlanStatus.ACTIVE
+        and observation.plan_end_time_ms is None
+        and observation.active_opportunity is not None
+        and observation.active_opportunity == opportunity
+        and observation.episode_id == opportunity.episode_id
+        and observation.source_id == opportunity.source_id
+        and observation.source_version == opportunity.source_version
+        and observation.source_fingerprint == opportunity.source_fingerprint
+        and observation.atr_fingerprint == opportunity.atr_source_fingerprint
+        and observation.watch_registered
+        and observation.terminal_registered
+        and opportunity.confirmation_time_ms == bar.timestamp_ms
+        and opportunity.visible_at_ms == bar.visible_at_ms
+        and isfinite(opportunity.trigger)
+        and isfinite(opportunity.invalidation)
+        and isfinite(opportunity.target)
+        and isfinite(opportunity.risk)
+        and isfinite(opportunity.reward)
+        and isfinite(opportunity.space_r)
+        and opportunity.risk > 0
+        and opportunity.reward > 0
+        and opportunity.space_r >= MINIMUM_SPACE_R
+        and (
+            (
+                alert_kind is AlertKind.LONG_READY
+                and observation.event is Event.BOUNCE_CONFIRMED
+                and opportunity.direction is Direction.LONG
+            )
+            or (
+                alert_kind is AlertKind.SHORT_READY
+                and observation.event is Event.REJECTION_CONFIRMED
+                and opportunity.direction is Direction.SHORT
+            )
+        )
+    )
+    if not (watch_guard or ready_guard):
+        return OutwardAlertDecision(
+            alert_kind=alert_kind,
+            fire=False,
+            decision_reason=AlertDecisionReason.EVENT_GUARD_FAILED,
+            source_delivery_ok=False,
+            target_delivery_ok=False,
+            atr_delivery_ok=False,
+        )
+
+    if observation.source_id is None or observation.source_version is None:
+        source_band = None
+    else:
+        source_band = _matching_band(
+            bands,
+            source_id=observation.source_id,
+            source_version=observation.source_version,
+            effective_fingerprint=observation.source_fingerprint or "",
+        )
+    source_delivery_ok = source_band is not None and _band_deliverable_at_close(
+        source_band, bar
+    )
+    if not source_delivery_ok:
+        return OutwardAlertDecision(
+            alert_kind=alert_kind,
+            fire=False,
+            decision_reason=AlertDecisionReason.SOURCE_NOT_DELIVERABLE_AT_CLOSE,
+            source_delivery_ok=False,
+            target_delivery_ok=not ready_guard,
+            atr_delivery_ok=False,
+        )
+
+    atr_delivery_ok = False
+    if _atr_deliverable_at_close(atr, bar):
+        try:
+            atr_delivery_ok = (
+                observation.atr_fingerprint is not None
+                and atr.effective_fingerprint == observation.atr_fingerprint
+            )
+        except (AttributeError, TypeError, ValueError):
+            atr_delivery_ok = False
+    if not atr_delivery_ok:
+        return OutwardAlertDecision(
+            alert_kind=alert_kind,
+            fire=False,
+            decision_reason=AlertDecisionReason.ATR_NOT_DELIVERABLE_AT_CLOSE,
+            source_delivery_ok=True,
+            target_delivery_ok=not ready_guard,
+            atr_delivery_ok=False,
+        )
+
+    target_delivery_ok = True
+    if ready_guard:
+        assert opportunity is not None
+        target_band = _matching_band(
+            bands,
+            source_id=opportunity.target_source_id,
+            source_version=opportunity.target_source_version,
+            effective_fingerprint=opportunity.target_source_fingerprint,
+        )
+        target_delivery_ok = target_band is not None and _band_deliverable_at_close(
+            target_band, bar
+        )
+        if not target_delivery_ok:
+            return OutwardAlertDecision(
+                alert_kind=alert_kind,
+                fire=False,
+                decision_reason=(
+                    AlertDecisionReason.TARGET_NOT_DELIVERABLE_AT_CLOSE
+                ),
+                source_delivery_ok=True,
+                target_delivery_ok=False,
+                atr_delivery_ok=True,
+            )
+
+    return OutwardAlertDecision(
+        alert_kind=alert_kind,
+        fire=True,
+        decision_reason=AlertDecisionReason.FIRE,
+        source_delivery_ok=True,
+        target_delivery_ok=target_delivery_ok,
+        atr_delivery_ok=True,
+    )
+
+
 def _direction_for_role(role: BandRole) -> Direction:
     return Direction.LONG if role is BandRole.SUPPORT else Direction.SHORT
 
@@ -700,8 +1078,8 @@ def _marker_for_watch(role: BandRole) -> str:
     return "支撑观察" if role is BandRole.SUPPORT else "阻力观察"
 
 
-def _marker_for_reaction(role: BandRole) -> str:
-    return "反弹确认" if role is BandRole.SUPPORT else "压回确认"
+def _marker_for_ready(role: BandRole) -> str:
+    return MARKER_TEXTS[1] if role is BandRole.SUPPORT else MARKER_TEXTS[3]
 
 
 def _watch_event(role: BandRole) -> Event:
@@ -798,6 +1176,9 @@ class PositionReversalEngine:
         self._source_registry: dict[str, tuple[object, ...]] = {}
         self._atr_registry: dict[str, tuple[object, ...]] = {}
         self._opportunities: list[OpportunityPayload] = []
+        self._active_opportunity: OpportunityPayload | None = None
+        self._plan_status = PlanStatus.NONE
+        self._plan_end_time_ms: int | None = None
         self._clear_episode_fields()
 
     @property
@@ -811,6 +1192,18 @@ class PositionReversalEngine:
     @property
     def latest_opportunity(self) -> OpportunityPayload | None:
         return self._opportunities[-1] if self._opportunities else None
+
+    @property
+    def active_opportunity(self) -> OpportunityPayload | None:
+        return self._active_opportunity
+
+    @property
+    def plan_status(self) -> PlanStatus:
+        return self._plan_status
+
+    @property
+    def plan_end_time_ms(self) -> int | None:
+        return self._plan_end_time_ms
 
     def _clear_episode_fields(self) -> None:
         self._episode_id: str | None = None
@@ -839,6 +1232,62 @@ class PositionReversalEngine:
         self._state = State.WAIT_CLEAR
         self._needs_clear = False
         self._clear_episode_fields()
+
+    def _end_active_plan(self, status: PlanStatus, timestamp_ms: int) -> None:
+        if self._active_opportunity is None:
+            return
+        if status not in {
+            PlanStatus.INVALIDATED,
+            PlanStatus.TARGET_REACHED,
+            PlanStatus.EXPIRED,
+            PlanStatus.SUPPRESSED,
+        }:
+            raise ValueError(f"invalid terminal plan status: {status}")
+        self._plan_status = status
+        self._plan_end_time_ms = timestamp_ms
+        self._active_opportunity = None
+
+    def _active_plan_context_ok(
+        self,
+        validated_bands: Sequence[tuple[int, NamedBand]],
+        atr: PriorAtrContext,
+    ) -> bool:
+        opportunity = self._active_opportunity
+        if opportunity is None:
+            return True
+        fingerprints = {band.effective_fingerprint for _, band in validated_bands}
+        return (
+            opportunity.source_fingerprint in fingerprints
+            and opportunity.target_source_fingerprint in fingerprints
+            and atr.effective_fingerprint == opportunity.atr_source_fingerprint
+        )
+
+    def _advance_active_plan(self, bar: TenMinuteBar) -> None:
+        """End the current displayed plan on the first causal terminal bar.
+
+        Expiry is known at bar open.  Otherwise, on a later confirmed bar,
+        invalidation has priority when both invalidation and target are touched.
+        The immutable opportunity ledger is never deleted.
+        """
+
+        opportunity = self._active_opportunity
+        if opportunity is None:
+            return
+        if bar.timestamp_ms >= opportunity.expires_at_ms:
+            self._end_active_plan(PlanStatus.EXPIRED, bar.timestamp_ms)
+            return
+        if bar.timestamp_ms <= opportunity.confirmation_time_ms:
+            return
+        if opportunity.direction is Direction.LONG:
+            invalidated = bar.low <= opportunity.invalidation
+            target_reached = bar.high >= opportunity.target
+        else:
+            invalidated = bar.high >= opportunity.invalidation
+            target_reached = bar.low <= opportunity.target
+        if invalidated:
+            self._end_active_plan(PlanStatus.INVALIDATED, bar.visible_at_ms)
+        elif target_reached:
+            self._end_active_plan(PlanStatus.TARGET_REACHED, bar.visible_at_ms)
 
     def _snapshot(
         self,
@@ -879,6 +1328,11 @@ class PositionReversalEngine:
             marker_price=marker_price,
             target_candidate=self._frozen_target,
             opportunity=self._current_opportunity,
+            active_opportunity=self._active_opportunity,
+            plan_status=self._plan_status,
+            plan_end_time_ms=self._plan_end_time_ms,
+            source_fingerprint=self._source_fingerprint,
+            atr_fingerprint=self._atr_fingerprint,
             source_rejections=tuple(rejections),
         )
 
@@ -907,14 +1361,7 @@ class PositionReversalEngine:
                     f"{_identity_audit_label(band.source_id, band.source_version)}:"
                     f"{rejection.value}"
                 )
-                if rejection in {
-                    SourceRejection.IDENTITY_MISSING,
-                    SourceRejection.IDENTITY_NON_CANONICAL,
-                    SourceRejection.IDENTITY_GRAMMAR_INVALID,
-                    SourceRejection.SOURCE_KIND_NOT_ALLOWED,
-                    SourceRejection.VALID_UNTIL_INVALID,
-                    SourceRejection.EXPIRED,
-                }:
+                if rejection in FATAL_SOURCE_REJECTIONS:
                     fatal = ReasonCode.SOURCE_NOT_READY
                 continue
             identity = band.identity
@@ -1157,7 +1604,6 @@ class PositionReversalEngine:
         role = self._source_role
         direction = _direction_for_role(role)
         event = _reaction_event(role)
-        marker_text = _marker_for_reaction(role)
         marker_price = bar.close
         trigger = bar.high if direction is Direction.LONG else bar.low
         buffer = max(
@@ -1181,8 +1627,6 @@ class PositionReversalEngine:
                 state=State.FAILED,
                 event=event,
                 reason=ReasonCode.TARGET_MISSING,
-                marker_text=marker_text,
-                marker_price=marker_price,
             )
 
         target = target_candidate.target_price
@@ -1200,8 +1644,6 @@ class PositionReversalEngine:
                 state=State.FAILED,
                 event=event,
                 reason=ReasonCode.TARGET_CONSUMED,
-                marker_text=marker_text,
-                marker_price=marker_price,
             )
         reward = (
             target - trigger
@@ -1214,8 +1656,6 @@ class PositionReversalEngine:
                 state=State.FAILED,
                 event=event,
                 reason=ReasonCode.RISK_INVALID,
-                marker_text=marker_text,
-                marker_price=marker_price,
             )
         space_r = reward / risk
         if space_r < self.config.minimum_space_r:
@@ -1224,8 +1664,6 @@ class PositionReversalEngine:
                 state=State.FAILED,
                 event=event,
                 reason=ReasonCode.SPACE_LT_1R,
-                marker_text=marker_text,
-                marker_price=marker_price,
             )
 
         opportunity_id = canonical_opportunity_id(
@@ -1273,12 +1711,15 @@ class PositionReversalEngine:
             space_r=space_r,
         )
         self._opportunities.append(opportunity)
+        self._active_opportunity = opportunity
+        self._plan_status = PlanStatus.ACTIVE
+        self._plan_end_time_ms = None
         return self._terminal(
             bar,
             state=State.READY,
             event=event,
             reason=ReasonCode.READY,
-            marker_text=marker_text,
+            marker_text=_marker_for_ready(role),
             marker_price=marker_price,
             opportunity=opportunity,
         )
@@ -1328,6 +1769,7 @@ class PositionReversalEngine:
         host_reason = self._host_reason(bar)
         if host_reason is not None:
             if bar.is_confirmed:
+                self._end_active_plan(PlanStatus.SUPPRESSED, bar.timestamp_ms)
                 self._reset_runtime()
                 self._last_timestamp_ms = None
             return self._snapshot(
@@ -1355,6 +1797,7 @@ class PositionReversalEngine:
                     reason=ReasonCode.DATA_DUPLICATE_IGNORED,
                 )
             if bar.timestamp_ms < self._last_timestamp_ms:
+                self._end_active_plan(PlanStatus.SUPPRESSED, bar.timestamp_ms)
                 self._reset_runtime()
                 self._last_timestamp_ms = None
                 return self._snapshot(
@@ -1365,6 +1808,7 @@ class PositionReversalEngine:
                     state_override=State.DISABLED,
                 )
             if bar.timestamp_ms - self._last_timestamp_ms != self.config.interval_ms:
+                self._end_active_plan(PlanStatus.SUPPRESSED, bar.timestamp_ms)
                 self._reset_runtime()
                 self._last_timestamp_ms = bar.timestamp_ms
                 return self._snapshot(
@@ -1381,6 +1825,7 @@ class PositionReversalEngine:
         rejections = validated.rejections + atr_rejections
         fatal_reason = validated.fatal_reason or atr_reason
         if fatal_reason is not None or not validated.bands:
+            self._end_active_plan(PlanStatus.SUPPRESSED, bar.timestamp_ms)
             self._reset_runtime()
             return self._snapshot(
                 bar,
@@ -1390,6 +1835,10 @@ class PositionReversalEngine:
                 rejections=rejections,
                 state_override=State.DISABLED,
             )
+
+        if not self._active_plan_context_ok(validated.bands, atr):
+            self._end_active_plan(PlanStatus.SUPPRESSED, bar.timestamp_ms)
+        self._advance_active_plan(bar)
 
         # A terminal event is outward on its own bar.  Only a strictly later
         # confirmed bar enters the WAIT_CLEAR lock.
@@ -1460,6 +1909,7 @@ class PositionReversalEngine:
                 or atr.value != self._frozen_atr
             )
             if source_missing or atr_changed:
+                self._end_active_plan(PlanStatus.SUPPRESSED, bar.timestamp_ms)
                 self._reset_runtime()
                 return self._snapshot(
                     bar,

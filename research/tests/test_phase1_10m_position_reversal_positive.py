@@ -31,7 +31,7 @@ def test_july31_required_short_and_long_are_visible_only_at_10m_close() -> None:
     assert opening.state is State.READY
     assert opening.event is Event.REJECTION_CONFIRMED
     assert opening.reason_code is ReasonCode.READY
-    assert opening.marker_text == "压回确认"
+    assert opening.marker_text == "空头确认"
     assert opening.watch_registered is True
     assert opening.terminal_registered is True
     assert opening.bar_time_ms == et_ms(9, 30)
@@ -68,7 +68,7 @@ def test_july31_required_short_and_long_are_visible_only_at_10m_close() -> None:
     assert lower.state is State.READY
     assert lower.event is Event.BOUNCE_CONFIRMED
     assert lower.reason_code is ReasonCode.READY
-    assert lower.marker_text == "反弹确认"
+    assert lower.marker_text == "多头确认"
     assert lower.watch_registered is True
     assert lower.terminal_registered is True
     assert lower.bar_time_ms == et_ms(11, 30)
@@ -93,6 +93,6 @@ def test_same_bar_touch_and_reaction_uses_one_terminal_marker() -> None:
 
     assert opening.watch_registered is True
     assert opening.terminal_registered is True
-    assert opening.marker_text == "压回确认"
+    assert opening.marker_text == "空头确认"
     assert opening.event is Event.REJECTION_CONFIRMED
     assert opening.state is State.READY

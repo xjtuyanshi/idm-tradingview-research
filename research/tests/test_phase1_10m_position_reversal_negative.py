@@ -83,7 +83,7 @@ def test_target_missing_keeps_reaction_description_but_never_ready() -> None:
     )
 
     assert result.event is Event.BOUNCE_CONFIRMED
-    assert result.marker_text == "反弹确认"
+    assert result.marker_text is None
     assert result.state is State.FAILED
     assert result.reason_code is ReasonCode.TARGET_MISSING
     assert result.opportunity is None
@@ -223,7 +223,7 @@ def test_nearest_target_below_one_r_is_not_replaced_by_farther_target() -> None:
     )
 
     assert result.event is Event.BOUNCE_CONFIRMED
-    assert result.marker_text == "反弹确认"
+    assert result.marker_text is None
     assert result.state is State.FAILED
     assert result.reason_code is ReasonCode.SPACE_LT_1R
     assert result.target_candidate is not None

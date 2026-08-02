@@ -1,4 +1,4 @@
-"""Static Pine/source contract and generator parity for POSITION_REVERSAL v1.3."""
+"""Static Pine/source contract and generator parity for POSITION_REVERSAL v1.4."""
 
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ from research.generate_phase1_10m_position_reversal_pine_v1 import (
     PINE_SOURCE,
 )
 from research.phase1_10m_position_reversal_oracle import (
+    ALERT_MESSAGES,
+    ALERT_TITLES,
     BAR_INTERVAL_MS,
     CANONICAL_CONTRACT_SHA256,
     DAILY_TIMEFRAME,
@@ -51,7 +53,7 @@ ORACLE = ROOT / "research/phase1_10m_position_reversal_oracle.py"
 GENERATOR = ROOT / "research/generate_phase1_10m_position_reversal_pine_v1.py"
 FROZEN_PRIMARY = ROOT / "idm_phase1_10m_primary_opportunity_v3.pine"
 FROZEN_TIMING = ROOT / "idm_phase1_3m_opportunity_timing_v3.pine"
-CANONICAL_SHA256 = "52e29ddefc34d02e4f2ac3675329d6d78d062a795c8dcb8b0f45d8200e66805b"
+CANONICAL_SHA256 = "7987577271b59eeca1106b5d56c5dd6b17fe426757224f2e8a8fb72fdca3a41c"
 HISTORICAL_R31_PRIMARY_SHA256 = (
     "ec2f8eee96960d8f95c6a2035181bfa0e319e498bdd12a988f2a9678bde138ba"
 )
@@ -89,7 +91,7 @@ def _canonical_block(code: str) -> str:
 def test_delivery_files_protocol_and_frozen_constants_exist() -> None:
     for path in (PINE, ORACLE, GENERATOR):
         assert path.is_file()
-    assert PROTOCOL_VERSION == "phase1-10m-position-reversal-1.3"
+    assert PROTOCOL_VERSION == "phase1-10m-position-reversal-1.4"
     assert LANE_ID == "POSITION_REVERSAL"
     assert EXPECTED_SYMBOL == "CAPITALCOM:SPX500"
     assert BAR_INTERVAL_MS == 600_000
@@ -117,7 +119,14 @@ def test_delivery_files_protocol_and_frozen_constants_exist() -> None:
         SourceKind.PREVIOUS_COMPLETED_DAILY_ATR.value
         == "PREVIOUS_COMPLETED_DAILY_ATR"
     )
-    assert MARKER_TEXTS == ("支撑观察", "反弹确认", "阻力观察", "压回确认")
+    assert MARKER_TEXTS == ("支撑观察", "多头确认", "阻力观察", "空头确认")
+    assert ALERT_TITLES == (
+        "位置反转｜支撑观察",
+        "位置反转｜阻力观察",
+        "位置反转｜多头确认",
+        "位置反转｜空头确认",
+    )
+    assert len(ALERT_MESSAGES) == 4
     assert len(CANONICAL_CONTRACT_SHA256) == 64
 
 
@@ -186,7 +195,7 @@ def test_python_rejects_noncanonical_values_pine_cannot_express(
 def test_indicator_is_native_standard_10m_and_confirmed_only() -> None:
     code = _source(PINE)
     assert code.startswith("//@version=6\n")
-    assert 'indicator("IDM Phase 1｜10m 位置反转 v1.3", overlay=true)' in code
+    assert 'indicator("IDM Phase 1｜10m 位置反转 v1.4", overlay=true)' in code
     assert "scale=" not in code
     assert 'ticker.standard(syminfo.tickerid) == EXPECTED_SYMBOL' in code
     assert 'timeframe.period == "10"' in code
@@ -199,7 +208,6 @@ def test_no_3m_mtf_vix_divergence_alert_order_strategy_or_dynamic_objects() -> N
     code = _strip_comments(_source(PINE))
     forbidden_patterns = (
         r"\brequest\.security(?:_lower_tf)?\s*\(",
-        r"\balertcondition\s*\(",
         r"\balert\s*\(",
         r"\bstrategy\s*\(",
         r"\bstrategy\.(?:entry|exit|order|close|cancel)\s*\(",
@@ -217,22 +225,31 @@ def test_only_four_short_price_anchored_plotshapes_exist() -> None:
     code = _source(PINE)
     lines = [line.strip() for line in code.splitlines() if "plotshape(" in line]
     assert len(lines) == 4
-    for marker, line in zip(MARKER_TEXTS, lines, strict=True):
+    expected_order = (MARKER_TEXTS[0], MARKER_TEXTS[2], MARKER_TEXTS[1], MARKER_TEXTS[3])
+    for marker, line in zip(expected_order, lines, strict=True):
         assert f'text="{marker}"' in line
         assert "location=location.absolute" in line
         assert "markerPrice : na" in line
-    assert re.search(r"(?<!shape)\bplot\s*\(", _strip_comments(code)) is None
+    plot_lines = [
+        line.strip()
+        for line in code.splitlines()
+        if re.match(r"^(?:[A-Za-z_][A-Za-z0-9_]*\s*=\s*)?plot\(", line.strip())
+    ]
+    assert len(plot_lines) == 8
+    assert sum("display=display.none" in line for line in plot_lines) == 6
+    assert sum("当前位置" in line for line in plot_lines) == 2
+    assert len([line for line in code.splitlines() if line.strip().startswith("fill(")]) == 1
     assert "plotchar(" not in code
     assert "plotarrow(" not in code
 
 
 def test_card_is_fixed_to_five_rows_and_has_no_marker_spam() -> None:
     code = _source(PINE)
-    assert 'bool showCard = input.bool(false, "显示五行状态卡"' in code
+    assert 'bool showCard = input.bool(true, "显示五行状态卡"' in code
     assert "table.new(position.bottom_right, 2, 5" in code
     assert "table.new(position.top_right" not in code
     assert 'table.cell(card, 0, 2, "有效期"' in code
-    assert 'string validityText = "SATy至 "' in code
+    assert 'string validityText = str.length(episodeSourceEffectiveKey) > 0' in code
     assert 'str.format_time(value, "MM-dd HH:mm", "America/New_York") + " ET"' in code
     row_numbers = [int(item) for item in re.findall(r"table\.cell\(card,\s*[01],\s*(\d+)", code)]
     assert row_numbers
@@ -346,22 +363,25 @@ def test_pine_effective_identity_host_reasons_and_same_side_gate_are_explicit() 
         "仅支持 CAPITALCOM:SPX500",
         "仅支持原生 10m",
         "仅支持标准 K 线",
-        "SATy/ATR 来源未启用",
-        "SATy/ATR 来源未知",
-        "SATy/ATR 来源已过期",
-        "ATR 上一完成日合同无效",
+        "未配置｜先启用上一完成日 ATR",
+        "ATR 来源类型未识别",
+        "ATR 已过期｜更新日更来源",
+        "ATR 合同无效｜检查时间/身份",
         "int EV_MULTIPLE_SAME_SIDE = 10",
         "int RS_MULTIPLE_SAME_SIDE = 13",
         'string touchedEffectiveMaterial = ""',
         '"#" + touchedEffectiveMaterial + "|" + atrEffectiveKey',
         "bool multipleSameSide =",
         '"PR-MULTIPLE-SAME-SIDE-"',
-        "同向多位置同时触及｜NO_PERMISSION",
+        "同向多位置同时触及｜不做",
     )
     for token in required:
         assert token in code
     assert 'not sourceSurfaceOk ? f_surface_reason_text(sourceSurfaceReason)' in code
-    assert "outwardSurfaceOk and showMarkers" in code
+    assert 'input.bool(true, "显示历史确认标记", group="图面")' in code
+    assert 'input.bool(false, "显示历史观察标记", group="图面")' in code
+    assert "(showWatchHistory or barstate.islast) and supportWatchPulse" in code
+    assert "showReadyHistory and longReadyPulse" in code
     assert 'IDENTITY_ENCODING_VERSION + "|B|" + str.trim(sourceKind)' in code
     assert 'IDENTITY_ENCODING_VERSION + "|A|" + str.trim(sourceKind)' in code
     assert "int EFFECTIVE_NUMBER_SCALE = 10000000000" in code
@@ -395,8 +415,8 @@ def test_pine_effective_identity_host_reasons_and_same_side_gate_are_explicit() 
 
 def test_first_valid_contiguous_bar_after_disabled_state_is_not_discarded() -> None:
     block = _canonical_block(_source(PINE))
-    reset_branch = block.index("if not sourceSurfaceOk or gapReset or not sourceContextOk")
-    valid_branch = block.index("else\n        // A source/gap reset consumes only the reset bar", reset_branch)
+    reset_branch = block.index("else if not sourceSurfaceOk or backwardReset or gapReset or not sourceContextOk")
+    valid_branch = block.index("else\n        if latestPlanStatus == PLAN_ACTIVE", reset_branch)
     restore = block.index("if st == ST_DISABLED", valid_branch)
     restore_wait = block.index("st := ST_WAIT_CLEAR", restore)
     terminal_roll = block.index(

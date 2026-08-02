@@ -311,7 +311,7 @@ def test_stale_forming_and_missing_identity_sources_fail_closed() -> None:
             (support_band(), candidate),
             prior_atr(),
         )
-        if rejection == "IDENTITY_MISSING":
+        if rejection in {"STALE", "IDENTITY_MISSING"}:
             assert result.event is Event.DATA_RESET
             assert result.reason_code is ReasonCode.SOURCE_NOT_READY
             assert result.state is State.DISABLED
@@ -319,6 +319,29 @@ def test_stale_forming_and_missing_identity_sources_fail_closed() -> None:
             assert result.event is Event.NONE
         assert result.opportunity is None
         assert any(rejection in item for item in result.source_rejections)
+
+
+def test_one_stale_extra_band_resets_an_otherwise_valid_source_surface() -> None:
+    current = bar(9, 30, 7478.0, 7486.3, 7462.8, 7465.1)
+    stale_extra = resistance_band(
+        source_id="SATY-ATR-STALE-EXTRA",
+        source_version="v2",
+        lower_bound=7520.0,
+        upper_bound=7520.0,
+        published_at_ms=current.timestamp_ms - 36 * 60 * 60 * 1000 - 1,
+        level_known_at_ms=current.timestamp_ms - 36 * 60 * 60 * 1000 - 1,
+    )
+    result = PositionReversalEngine().ingest(
+        current,
+        (support_band(), resistance_band(), stale_extra),
+        prior_atr(),
+    )
+    assert result.data_valid is False
+    assert result.event is Event.DATA_RESET
+    assert result.reason_code is ReasonCode.SOURCE_NOT_READY
+    assert result.state is State.DISABLED
+    assert result.opportunity is None
+    assert any("SATY-ATR-STALE-EXTRA" in item and "STALE" in item for item in result.source_rejections)
 
 
 def test_noncanonical_or_inconsistent_source_freshness_fails_closed() -> None:
