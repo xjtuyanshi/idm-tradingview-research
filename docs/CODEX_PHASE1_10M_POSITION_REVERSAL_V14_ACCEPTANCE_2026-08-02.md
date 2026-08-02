@@ -7,7 +7,8 @@
 - 源码、生成器、Oracle、专项合同与全仓离线门禁：**PASS**。
 - Trader 可读性复审：**PASS**。
 - 对抗性 alert/因果复审：**PASS**。
-- TradingView 在线编译、暗色实图、拖动缩放、Replay 与 Alerts Manager：**PENDING**。
+- TradingView 在线编译、原生 10m 暗色实图、拖动缩放、Replay、四项 condition 与 Alerts Manager：**PASS**。
+- 当前 SATy/ATR source 的在线运行快照与四项 bar-close alert：**PASS**；手机实际送达尚未验证。
 - 真实 30/90 天逐日 source 快照回放、方向 edge 与盈利能力：**PENDING**。
 
 本记录只验收独立的 `POSITION_REVERSAL` 10m lane。它没有接入 3m consumer、VIX、MACD/divergence、订单、webhook 或自动交易，也没有修改 R3.2 趋势延续 lane。
@@ -99,19 +100,45 @@ Task source ZIP SHA-256:
 
 任务源码 ZIP 为 116,982 bytes、23 entries；CRC、敏感文件名和凭据内容扫描均 PASS。
 
-## 在线门禁与 alert 创建规则
+## TradingView 在线门禁：PASS
 
-在线状态没有通过前，不创建 alerts。通过顺序固定为：
+### 编译、布局和 source 快照
 
-1. 在干净 Pine Editor 中粘贴 commit 对应源码并 clean compile。
-2. 在 `CAPITALCOM:SPX500` 标准 K 线、原生 10m 上删除旧实例后重新添加。
-3. 配置 fresh、盘前已发布且在 bar close 仍有效的当日位置与上一完成日 ATR。
-4. 暗色主题检查文字、位置带和卡片；拖动与缩放检查价格锚定。
-5. Replay 正例及 accepted break、无目标、空间不足、stale/reset 等反例。
-6. Condition 下拉确认恰好四项。
-7. 四项均使用 `Once Per Bar Close`；不配置 webhook 或 order action。
-8. 在 Alerts Manager 核对四项 active。daily source 更新后删除旧 snapshot 并重建。
+- 在 TradingView Pine Editor 中使用本记录冻结的源码完成 clean compile，并以 `IDM Phase 1｜10m 位置反转 v1.4` 保存、添加到图表。
+- 实例只放在 Chart #1 的 `CAPITALCOM:SPX500` 标准 K 线、原生 10m；Chart #2 的 3m 与 Chart #3 的 VIX 10m 未被本 lane 改写。
+- 暗色主题下状态卡、位置、失效原因和提醒文案可读；marker 与价格位置在拖动、缩放及 Replay 中保持 K 线锚定。
+- 最终在线 source 版本为 `2026-08-03-observed1904ET-v1`。SATy 值在 2026-08-02 19:04 ET 首次实际观察；TradingView 时间输入只支持 15 分钟粒度，因此 `published_at` 与 `known_at` 保守向后设为 19:15 ET，禁止 19:15 前历史 K 线倒填使用。
+- source 值：Previous Close `7475.6`、Lower Trigger/support `7452.1`、Upper Trigger/resistance `7499.1`、`-1 ATR 7376.0`、`+1 ATR 7575.2`、ATR `99.6`；有效至 2026-08-03 16:00 ET。
+- ATR 身份是上一完成日 `2026-07-31` 的 completed daily ATR。source fingerprint 更新后，状态机按设计先 fail-closed 重置一根确认 K；下一根 10m K 收盘后恢复。
+- 恢复后的当前状态为“本轮不做｜阻力 7499.1–7499.1｜位置已被接受突破｜不倒填”。价格已经由 10m 收盘接受突破阻力，系统不会在突破后补发一个过时空头确认。
+
+### Replay 和反例
+
+- 使用 2026-07-31 当日历史 source：ATR `98.70936228387525`、support `7421.204590501005`、resistance `7467.795409498995`，其 published/known time 为 2026-07-30 16:00 ET、valid-until 为 2026-07-31 16:00 ET。
+- TradingView 实际 Replay 中出现过一笔可见的历史“空头确认”；其后阻力被收盘接受突破时，本轮结束且没有倒填新的反转。
+- 约 11:40 的支撑反应没有被误报成多头确认：真实 TradingView K 线下最近目标空间不足 1R，状态卡明确显示“最近目标空间 < 1R｜不做”。这说明离线 synthetic contract 的多头正例不能冒充该时段真实行情结果。
+- Replay 后完成拖动与缩放检查，历史 marker 仍固定在原始 K 线上，没有出现随视窗漂浮的 label。
+
+### 最终 alerts
+
+- condition 下拉恰好四项：`位置反转｜支撑观察`、`位置反转｜阻力观察`、`位置反转｜多头确认`、`位置反转｜空头确认`。
+- Alerts Manager 中最终恰好四项本 lane alert，均为 `SPX500, 10m`、`Active`；逐项按相同创建流程设置，另抽查“空头确认”显示 Interval `10m`、Trigger `Once per bar close`。
+- 通知渠道为 TradingView 的 App、Toasts、Sound；没有 webhook、order action 或自动交易。尚未观察到真实手机送达，因此不能声称手机链路已验收。
+- 在 source 时间纠正过程中曾创建的 16:00/18:00 快照均已删除；最终仅保留基于 19:04 实际观察、19:15 保守 known-time 的四项 snapshot。
+- alert 对象虽然可继续显示 Active，但 Pine source 在 2026-08-03 16:00 ET 后会 fail-closed；daily source 更新后仍必须删除旧 snapshot 并重建。
+
+### 在线证据
+
+证据保存在 `/Users/lukegogogo/Documents/idm-tradingview-signal-evidence/tradingview_online/`：
+
+| 证据 | SHA-256 |
+|---|---|
+| `position_reversal_v14_live_recovered_20260802.jpg` | `441c856938a3b272271670f61b0657982c24731630afdc4c11b86f10b1f17c70` |
+| `position_reversal_v14_alerts_final_20260802.jpg` | `a3636a1b6973a936dfe0fa783ab0dcf360eb60c93374836a900729ce62228e3e` |
+| `position_reversal_v14_once_per_bar_close_final_20260802.jpg` | `a32521de3f2508f98546e3d7875e5b9b4a9677360211daa1231be0259d8a5a09` |
+| `position_reversal_v14_replay_1140_20260731.png` | `556f0edccf78cff6a01d1350dbfe75e595f767e24eabe25e08c9c1fc4c904363` |
+| `position_reversal_v14_pan_zoom_anchor_20260731.png` | `1797780f94cae594d35398a21f30858ab981383fe6a929a0b22df10b8ce8ff36` |
 
 ## 仍不能声称的结论
 
-当前没有逐日 append-only 的 SATy/ATR source snapshot，因此不能把一组今天的手工位置套到 30/90 天历史 K 线上并称为无后视镜回测。132 项专项测试证明规则、消息、身份、生命周期和 fail-closed 门禁按合同运行；它们不证明胜率、盈利、真实成交或手机通知送达。
+当前没有逐日 append-only 的 SATy/ATR source snapshot，因此不能把一组今天的手工位置套到 30/90 天历史 K 线上并称为无后视镜回测。132 项专项测试和本次在线门禁证明规则、消息、身份、生命周期、图面锚定与 fail-closed 门禁按合同运行；它们不证明胜率、盈利、真实成交或手机通知送达。
