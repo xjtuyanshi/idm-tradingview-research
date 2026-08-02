@@ -1,0 +1,910 @@
+//@version=6
+indicator("IDM Phase 1｜10m 交易计划 v3.2", shorttitle="IDM 10m 计划 R3.2", overlay=true, explicit_plot_zorder=true)
+
+// Native confirmed-only 10m TREND_CONTINUATION producer.
+// WATCH is observation-only.  MAIN requires a causal named target and >=1R.
+// No orders, alerts, broker integration, profitability claim, or reversal lane.
+
+string EXPECTED_SYMBOL = "CAPITALCOM:SPX500"
+string GROUP_VIEW = "显示"
+bool showEmaContext = input.bool(true, "显示 EMA5/12 + EMA21/48", group=GROUP_VIEW)
+bool showWatchHistory = input.bool(false, "显示历史观察点（默认关闭）", group=GROUP_VIEW)
+bool showPlanLevels = input.bool(false, "显示当前冻结 entry / invalidation / target", group=GROUP_VIEW)
+bool showCard = input.bool(true, "显示 10m 交易计划卡", group=GROUP_VIEW)
+
+bool e_hostContractOk = ticker.standard(syminfo.tickerid) == EXPECTED_SYMBOL and timeframe.isintraday and timeframe.period == "10" and chart.is_standard
+
+f_strict_pivot_high_2_2() =>
+    not na(high[4]) and high[2] > high[4] and high[2] > high[3] and high[2] > high[1] and high[2] > high ? high[2] : na
+
+f_strict_pivot_low_2_2() =>
+    not na(low[4]) and low[2] < low[4] and low[2] < low[3] and low[2] < low[1] and low[2] < low ? low[2] : na
+
+f_strict_pivot_high_time_2_2() =>
+    not na(high[4]) and high[2] > high[4] and high[2] > high[3] and high[2] > high[1] and high[2] > high ? time[2] : na
+
+f_strict_pivot_low_time_2_2() =>
+    not na(low[4]) and low[2] < low[4] and low[2] < low[3] and low[2] < low[1] and low[2] < low ? time[2] : na
+
+bool e_sourceAvailable = barstate.isconfirmed
+bool e_transportRepeatAllowed = false
+int e_time = time
+int e_timeClose = time_close
+int e_dayKey = time("D", "0000-2359", "America/New_York")
+float e_open = open
+float e_high = high
+float e_low = low
+float e_close = close
+float e_ema5 = ta.ema(hl2, 5)
+float e_ema12 = ta.ema(hl2, 12)
+float e_ema21 = ta.ema(close, 21)
+float e_ema48 = ta.ema(close, 48)
+float e_minimumTick = syminfo.mintick
+float e_newPivotHigh = f_strict_pivot_high_2_2()
+int e_newPivotHighTime = f_strict_pivot_high_time_2_2()
+float e_newPivotLow = f_strict_pivot_low_2_2()
+int e_newPivotLowTime = f_strict_pivot_low_time_2_2()
+bool e_modeOk = e_hostContractOk
+
+// PRIMARY10M_CANONICAL_R3_BEGIN phase1-10m-primary-opportunity-3.0
+string PRIMARY_PROTOCOL_VERSION = "phase1-10m-primary-opportunity-3.0"
+string TIMING_PROTOCOL_VERSION = "phase1-3m-opportunity-timing-3.0"
+bool POSITION_REVERSAL_ENABLED = false
+int PRIMARY_INTERVAL_MS = 600000
+int TIMING_INTERVAL_MS = 180000
+int PIVOT_LEFT_BARS = 2
+int PIVOT_RIGHT_BARS = 2
+int MAX_PIVOT_LEVELS = 64
+int MAX_REACTION_BARS = 6
+int MAX_ACTIVE_BARS = 12
+int MAX_TIMING_TRIGGER_BARS = 8
+float MINIMUM_SPACE_R = 1.0
+
+int DIRECTION_SHORT = -1
+int DIRECTION_NONE = 0
+int DIRECTION_LONG = 1
+
+int STATE_DISABLED = -1
+int STATE_WAIT_TREND = 0
+int STATE_WAIT_CLEAR = 1
+int STATE_ARMED = 2
+int STATE_WAIT_REACTION = 3
+int STATE_ACTIVE = 4
+
+int OUTCOME_MAIN_SHORT = -2
+int OUTCOME_WATCH_SHORT = -1
+int OUTCOME_NO_OPPORTUNITY = 0
+int OUTCOME_WATCH_LONG = 1
+int OUTCOME_MAIN_LONG = 2
+int OUTCOME_DONT_CHASE = 3
+
+int EVENT_NONE = 0
+int EVENT_WATCH_LONG = 1
+int EVENT_WATCH_SHORT = -1
+int EVENT_MAIN_LONG = 2
+int EVENT_MAIN_SHORT = -2
+int EVENT_DONT_CHASE = 3
+int EVENT_SPACE_UNKNOWN = 4
+int EVENT_INVALIDATED = 5
+int EVENT_TARGET_REACHED = 6
+int EVENT_EXPIRED = 7
+int EVENT_CONTEXT_RESET = 8
+int EVENT_DATA_RESET = 9
+
+int REASON_DISABLED = 10
+int REASON_DATA_INVALID = 11
+int REASON_DATA_DUPLICATE_IGNORED = 12
+int REASON_DATA_NON_MONOTONIC = 13
+int REASON_DATA_GAP_RESET = 14
+int REASON_WAIT_SLOW_TREND = 20
+int REASON_EPOCH_STARTED = 21
+int REASON_WAIT_FULL_CLEAR = 22
+int REASON_EPISODE_ARMED = 23
+int REASON_WAIT_FIRST_PULLBACK = 24
+int REASON_FIRST_PULLBACK_WATCH = 25
+int REASON_WAIT_LATER_RECLAIM = 26
+int REASON_REACTION_EXPIRED = 27
+int REASON_SLOW_CONTEXT_LOST = 28
+int REASON_FROZEN_INVALIDATION_BROKEN = 29
+int REASON_SPACE_UNKNOWN = 30
+int REASON_SPACE_LT_1R = 31
+int REASON_MAIN_OPPORTUNITY_ACTIVE = 32
+int REASON_TARGET_REACHED = 33
+int REASON_ACTIVE_EXPIRED = 34
+
+int LEVEL_UNKNOWN = 0
+int LEVEL_PRIOR_EXCURSION_10M = 1
+int LEVEL_CONFIRMED_PIVOT_10M = 2
+int LEVEL_PREVIOUS_COMPLETED_DAY_HIGH = 3
+int LEVEL_PREVIOUS_COMPLETED_DAY_LOW = 4
+
+f_source_priority(int source) =>
+    source == LEVEL_PRIOR_EXCURSION_10M ? 1 : source == LEVEL_CONFIRMED_PIVOT_10M ? 2 : source == LEVEL_PREVIOUS_COMPLETED_DAY_HIGH or source == LEVEL_PREVIOUS_COMPLETED_DAY_LOW ? 3 : 99
+
+f_provenance_rank(int value) =>
+    nz(value, -1)
+
+f_candidate_before(int direction, float leftPrice, int leftSource, int leftTime, float rightPrice, int rightSource, int rightTime) =>
+    bool priceBefore = direction == DIRECTION_LONG ? leftPrice < rightPrice : leftPrice > rightPrice
+    bool samePrice = leftPrice == rightPrice
+    int leftPriority = f_source_priority(leftSource)
+    int rightPriority = f_source_priority(rightSource)
+    priceBefore or samePrice and (leftPriority < rightPriority or leftPriority == rightPriority and f_provenance_rank(leftTime) < f_provenance_rank(rightTime))
+
+f_source_text(int source) =>
+    source == LEVEL_PRIOR_EXCURSION_10M ? "PRIOR_EXCURSION_10M" : source == LEVEL_CONFIRMED_PIVOT_10M ? "CONFIRMED_PIVOT_10M" : source == LEVEL_PREVIOUS_COMPLETED_DAY_HIGH ? "PREVIOUS_COMPLETED_DAY_HIGH" : source == LEVEL_PREVIOUS_COMPLETED_DAY_LOW ? "PREVIOUS_COMPLETED_DAY_LOW" : "UNKNOWN"
+
+f_source_card_text(int source) =>
+    source == LEVEL_PRIOR_EXCURSION_10M ? "前段离云位" : source == LEVEL_CONFIRMED_PIVOT_10M ? "确认枢轴" : source == LEVEL_PREVIOUS_COMPLETED_DAY_HIGH ? "前完整日高" : source == LEVEL_PREVIOUS_COMPLETED_DAY_LOW ? "前完整日低" : "未知"
+
+float e_cloudUpper = math.max(e_ema5, e_ema12)
+float e_cloudLower = math.min(e_ema5, e_ema12)
+int e_slowDirection = na(e_ema21) or na(e_ema48) ? DIRECTION_NONE : e_ema21 > e_ema48 and e_close >= e_ema48 ? DIRECTION_LONG : e_ema21 < e_ema48 and e_close <= e_ema48 ? DIRECTION_SHORT : DIRECTION_NONE
+int e_fastDirection = na(e_ema5) or na(e_ema12) ? DIRECTION_NONE : e_ema5 > e_ema12 ? DIRECTION_LONG : e_ema5 < e_ema12 ? DIRECTION_SHORT : DIRECTION_NONE
+bool e_dataReady = not na(e_time) and not na(e_timeClose) and not na(e_dayKey) and not na(e_open) and not na(e_high) and not na(e_low) and not na(e_close) and e_high >= e_low and e_high >= math.max(e_open, e_close) and e_low <= math.min(e_open, e_close) and not na(e_ema5) and not na(e_ema12) and not na(e_ema21) and not na(e_ema48) and not na(e_minimumTick) and e_minimumTick > 0
+
+var int e_lastProcessedTime = na
+var int e_contiguousBars = 0
+var int e_state = STATE_WAIT_TREND
+var int e_epochDirection = DIRECTION_NONE
+var int e_epochStartTime = na
+var int e_episodeStartTime = na
+var float e_priorExcursion = na
+var int e_priorExcursionTime = na
+var int e_pullbackTime = na
+var float e_reactionHigh = na
+var float e_reactionLow = na
+var float e_frozenInvalidation = na
+var int e_reactionAge = 0
+var int e_activeAge = 0
+var bool e_opportunityActive = false
+var int e_opportunityDirection = DIRECTION_NONE
+var int e_opportunityTime = na
+var float e_entryReference = na
+var float e_invalidation = na
+var float e_nextNamedLevel = na
+var int e_nextNamedLevelSource = LEVEL_UNKNOWN
+var int e_nextNamedLevelProvenanceTime = na
+var float e_risk = na
+var float e_space = na
+var float e_spaceR = na
+var int e_outcome = OUTCOME_NO_OPPORTUNITY
+var int e_outcomeDirection = DIRECTION_NONE
+var int e_reason = REASON_DISABLED
+var int e_eventPulse = EVENT_NONE
+var float e_markerPrice = na
+
+var int e_currentDayKey = na
+var float e_currentDayHigh = na
+var float e_currentDayLow = na
+var int e_currentDayFirstTime = na
+var int e_currentDayLastTime = na
+var int e_currentDayBarCount = 0
+var bool e_currentDayContiguous = false
+var float e_previousDayHigh = na
+var float e_previousDayLow = na
+var int e_previousDayAvailableTime = na
+var bool e_previousDayHighConsumed = false
+var bool e_previousDayLowConsumed = false
+
+var array<float> e_pivotHighPrices = array.new_float(0)
+var array<int> e_pivotHighTimes = array.new_int(0)
+var array<bool> e_pivotHighConsumed = array.new_bool(0)
+var array<float> e_pivotLowPrices = array.new_float(0)
+var array<int> e_pivotLowTimes = array.new_int(0)
+var array<bool> e_pivotLowConsumed = array.new_bool(0)
+
+var array<float> e_frozenCandidatePrices = array.new_float(0)
+var array<int> e_frozenCandidateSources = array.new_int(0)
+var array<int> e_frozenCandidateTimes = array.new_int(0)
+var array<bool> e_frozenCandidateConsumed = array.new_bool(0)
+
+e_eventPulse := EVENT_NONE
+e_markerPrice := na
+
+bool e_exactDuplicate = e_modeOk and e_sourceAvailable and e_dataReady and not na(e_lastProcessedTime) and e_time == e_lastProcessedTime
+bool e_backward = e_modeOk and e_sourceAvailable and e_dataReady and not na(e_lastProcessedTime) and e_time < e_lastProcessedTime
+bool e_newSourceBar = e_modeOk and e_sourceAvailable and e_dataReady and (na(e_lastProcessedTime) or e_time > e_lastProcessedTime)
+
+if not e_modeOk
+    e_lastProcessedTime := na
+    e_contiguousBars := 0
+    e_state := STATE_DISABLED
+    e_epochDirection := DIRECTION_NONE
+    e_epochStartTime := na
+    e_episodeStartTime := na
+    e_priorExcursion := na
+    e_priorExcursionTime := na
+    e_pullbackTime := na
+    e_reactionHigh := na
+    e_reactionLow := na
+    e_frozenInvalidation := na
+    e_reactionAge := 0
+    e_activeAge := 0
+    e_opportunityActive := false
+    e_opportunityDirection := DIRECTION_NONE
+    e_opportunityTime := na
+    e_entryReference := na
+    e_invalidation := na
+    e_nextNamedLevel := na
+    e_nextNamedLevelSource := LEVEL_UNKNOWN
+    e_nextNamedLevelProvenanceTime := na
+    e_risk := na
+    e_space := na
+    e_spaceR := na
+    e_outcome := OUTCOME_NO_OPPORTUNITY
+    e_outcomeDirection := DIRECTION_NONE
+    e_reason := REASON_DISABLED
+    e_currentDayKey := na
+    e_currentDayHigh := na
+    e_currentDayLow := na
+    e_currentDayFirstTime := na
+    e_currentDayLastTime := na
+    e_currentDayBarCount := 0
+    e_currentDayContiguous := false
+    e_previousDayHigh := na
+    e_previousDayLow := na
+    e_previousDayAvailableTime := na
+    e_previousDayHighConsumed := false
+    e_previousDayLowConsumed := false
+    array.clear(e_pivotHighPrices)
+    array.clear(e_pivotHighTimes)
+    array.clear(e_pivotHighConsumed)
+    array.clear(e_pivotLowPrices)
+    array.clear(e_pivotLowTimes)
+    array.clear(e_pivotLowConsumed)
+    array.clear(e_frozenCandidatePrices)
+    array.clear(e_frozenCandidateSources)
+    array.clear(e_frozenCandidateTimes)
+    array.clear(e_frozenCandidateConsumed)
+else if e_sourceAvailable and not e_dataReady
+    e_lastProcessedTime := na
+    e_contiguousBars := 0
+    e_state := STATE_DISABLED
+    e_epochDirection := DIRECTION_NONE
+    e_epochStartTime := na
+    e_episodeStartTime := na
+    e_priorExcursion := na
+    e_priorExcursionTime := na
+    e_pullbackTime := na
+    e_reactionHigh := na
+    e_reactionLow := na
+    e_frozenInvalidation := na
+    e_reactionAge := 0
+    e_activeAge := 0
+    e_opportunityActive := false
+    e_opportunityDirection := DIRECTION_NONE
+    e_opportunityTime := na
+    e_entryReference := na
+    e_invalidation := na
+    e_nextNamedLevel := na
+    e_nextNamedLevelSource := LEVEL_UNKNOWN
+    e_nextNamedLevelProvenanceTime := na
+    e_risk := na
+    e_space := na
+    e_spaceR := na
+    e_outcome := OUTCOME_NO_OPPORTUNITY
+    e_outcomeDirection := DIRECTION_NONE
+    e_reason := REASON_DATA_INVALID
+    e_eventPulse := EVENT_DATA_RESET
+    e_currentDayKey := na
+    e_currentDayHigh := na
+    e_currentDayLow := na
+    e_currentDayFirstTime := na
+    e_currentDayLastTime := na
+    e_currentDayBarCount := 0
+    e_currentDayContiguous := false
+    e_previousDayHigh := na
+    e_previousDayLow := na
+    e_previousDayAvailableTime := na
+    e_previousDayHighConsumed := false
+    e_previousDayLowConsumed := false
+    array.clear(e_pivotHighPrices)
+    array.clear(e_pivotHighTimes)
+    array.clear(e_pivotHighConsumed)
+    array.clear(e_pivotLowPrices)
+    array.clear(e_pivotLowTimes)
+    array.clear(e_pivotLowConsumed)
+    array.clear(e_frozenCandidatePrices)
+    array.clear(e_frozenCandidateSources)
+    array.clear(e_frozenCandidateTimes)
+    array.clear(e_frozenCandidateConsumed)
+else if e_backward
+    e_lastProcessedTime := na
+    e_contiguousBars := 0
+    e_state := STATE_DISABLED
+    e_epochDirection := DIRECTION_NONE
+    e_epochStartTime := na
+    e_episodeStartTime := na
+    e_priorExcursion := na
+    e_priorExcursionTime := na
+    e_pullbackTime := na
+    e_reactionHigh := na
+    e_reactionLow := na
+    e_frozenInvalidation := na
+    e_reactionAge := 0
+    e_activeAge := 0
+    e_opportunityActive := false
+    e_opportunityDirection := DIRECTION_NONE
+    e_opportunityTime := na
+    e_entryReference := na
+    e_invalidation := na
+    e_nextNamedLevel := na
+    e_nextNamedLevelSource := LEVEL_UNKNOWN
+    e_nextNamedLevelProvenanceTime := na
+    e_risk := na
+    e_space := na
+    e_spaceR := na
+    e_outcome := OUTCOME_NO_OPPORTUNITY
+    e_outcomeDirection := DIRECTION_NONE
+    e_reason := REASON_DATA_NON_MONOTONIC
+    e_eventPulse := EVENT_DATA_RESET
+    e_currentDayKey := na
+    e_currentDayHigh := na
+    e_currentDayLow := na
+    e_currentDayFirstTime := na
+    e_currentDayLastTime := na
+    e_currentDayBarCount := 0
+    e_currentDayContiguous := false
+    e_previousDayHigh := na
+    e_previousDayLow := na
+    e_previousDayAvailableTime := na
+    e_previousDayHighConsumed := false
+    e_previousDayLowConsumed := false
+    array.clear(e_pivotHighPrices)
+    array.clear(e_pivotHighTimes)
+    array.clear(e_pivotHighConsumed)
+    array.clear(e_pivotLowPrices)
+    array.clear(e_pivotLowTimes)
+    array.clear(e_pivotLowConsumed)
+    array.clear(e_frozenCandidatePrices)
+    array.clear(e_frozenCandidateSources)
+    array.clear(e_frozenCandidateTimes)
+    array.clear(e_frozenCandidateConsumed)
+else if e_exactDuplicate and not e_transportRepeatAllowed
+    e_reason := REASON_DATA_DUPLICATE_IGNORED
+else if e_newSourceBar
+    bool e_gapReset = not na(e_lastProcessedTime) and e_time - e_lastProcessedTime != PRIMARY_INTERVAL_MS
+    e_lastProcessedTime := e_time
+
+    if e_gapReset
+        e_contiguousBars := 1
+        e_state := STATE_WAIT_TREND
+        e_epochDirection := DIRECTION_NONE
+        e_epochStartTime := na
+        e_episodeStartTime := na
+        e_priorExcursion := na
+        e_priorExcursionTime := na
+        e_pullbackTime := na
+        e_reactionHigh := na
+        e_reactionLow := na
+        e_frozenInvalidation := na
+        e_reactionAge := 0
+        e_activeAge := 0
+        e_opportunityActive := false
+        e_opportunityDirection := DIRECTION_NONE
+        e_opportunityTime := na
+        e_entryReference := na
+        e_invalidation := na
+        e_nextNamedLevel := na
+        e_nextNamedLevelSource := LEVEL_UNKNOWN
+        e_nextNamedLevelProvenanceTime := na
+        e_risk := na
+        e_space := na
+        e_spaceR := na
+        e_outcome := OUTCOME_NO_OPPORTUNITY
+        e_outcomeDirection := DIRECTION_NONE
+        e_reason := REASON_DATA_GAP_RESET
+        e_eventPulse := EVENT_DATA_RESET
+        array.clear(e_pivotHighPrices)
+        array.clear(e_pivotHighTimes)
+        array.clear(e_pivotHighConsumed)
+        array.clear(e_pivotLowPrices)
+        array.clear(e_pivotLowTimes)
+        array.clear(e_pivotLowConsumed)
+        array.clear(e_frozenCandidatePrices)
+        array.clear(e_frozenCandidateSources)
+        array.clear(e_frozenCandidateTimes)
+        array.clear(e_frozenCandidateConsumed)
+        e_currentDayKey := e_dayKey
+        e_currentDayHigh := e_high
+        e_currentDayLow := e_low
+        e_currentDayFirstTime := e_time
+        e_currentDayLastTime := e_time
+        e_currentDayBarCount := 1
+        e_currentDayContiguous := hour(e_time, "America/New_York") == 0 and minute(e_time, "America/New_York") == 0 and second(e_time, "America/New_York") == 0
+        e_previousDayHigh := na
+        e_previousDayLow := na
+        e_previousDayAvailableTime := na
+        e_previousDayHighConsumed := false
+        e_previousDayLowConsumed := false
+    else
+        e_contiguousBars += 1
+
+        // Publish a previous ET day only after a complete 144-bar wall-clock
+        // sequence from 00:00 through 23:50.  Midday startup, any gap/reset,
+        // and DST-transition days fail closed rather than creating a target.
+        if na(e_currentDayKey)
+            e_currentDayKey := e_dayKey
+            e_currentDayHigh := na
+            e_currentDayLow := na
+            e_currentDayFirstTime := na
+            e_currentDayLastTime := na
+            e_currentDayBarCount := 0
+            e_currentDayContiguous := true
+        else if e_dayKey != e_currentDayKey
+            int e_dayRolloverMs = e_dayKey - e_currentDayKey
+            bool e_rollsToImmediateNextEtDay = e_dayRolloverMs >= 23 * 60 * 60 * 1000 and e_dayRolloverMs <= 25 * 60 * 60 * 1000
+            bool e_previousDayComplete = e_rollsToImmediateNextEtDay and e_currentDayContiguous and e_currentDayBarCount == 144 and not na(e_currentDayFirstTime) and not na(e_currentDayLastTime) and hour(e_currentDayFirstTime, "America/New_York") == 0 and minute(e_currentDayFirstTime, "America/New_York") == 0 and second(e_currentDayFirstTime, "America/New_York") == 0 and hour(e_currentDayLastTime, "America/New_York") == 23 and minute(e_currentDayLastTime, "America/New_York") == 50 and second(e_currentDayLastTime, "America/New_York") == 0
+            e_previousDayHigh := e_previousDayComplete ? e_currentDayHigh : na
+            e_previousDayLow := e_previousDayComplete ? e_currentDayLow : na
+            e_previousDayAvailableTime := e_previousDayComplete ? e_time : na
+            e_previousDayHighConsumed := false
+            e_previousDayLowConsumed := false
+            e_currentDayKey := e_dayKey
+            e_currentDayHigh := na
+            e_currentDayLow := na
+            e_currentDayFirstTime := na
+            e_currentDayLastTime := na
+            e_currentDayBarCount := 0
+            e_currentDayContiguous := true
+
+        // Consume only levels that were already registered before this bar.
+        if array.size(e_pivotHighPrices) > 0
+            for e_i = 0 to array.size(e_pivotHighPrices) - 1
+                if e_high >= array.get(e_pivotHighPrices, e_i)
+                    array.set(e_pivotHighConsumed, e_i, true)
+        if array.size(e_pivotLowPrices) > 0
+            for e_i = 0 to array.size(e_pivotLowPrices) - 1
+                if e_low <= array.get(e_pivotLowPrices, e_i)
+                    array.set(e_pivotLowConsumed, e_i, true)
+        if not na(e_previousDayHigh) and e_high >= e_previousDayHigh
+            e_previousDayHighConsumed := true
+        if not na(e_previousDayLow) and e_low <= e_previousDayLow
+            e_previousDayLowConsumed := true
+
+        // WAIT_REACTION has frozen-invalidation priority over slow-context
+        // loss on the same confirmed bar.
+        if e_state == STATE_WAIT_REACTION
+            bool e_reactionInvalidated = e_epochDirection == DIRECTION_LONG ? e_close < e_frozenInvalidation : e_close > e_frozenInvalidation
+            if e_reactionInvalidated
+                bool e_reactionAlsoLostSlow = e_slowDirection != e_epochDirection
+                e_opportunityActive := false
+                e_outcome := OUTCOME_NO_OPPORTUNITY
+                e_outcomeDirection := DIRECTION_NONE
+                e_eventPulse := EVENT_INVALIDATED
+                e_markerPrice := e_frozenInvalidation
+                e_reason := REASON_FROZEN_INVALIDATION_BROKEN
+                if e_reactionAlsoLostSlow
+                    e_state := STATE_WAIT_TREND
+                    e_epochDirection := DIRECTION_NONE
+                    e_epochStartTime := na
+                else
+                    e_state := STATE_WAIT_CLEAR
+            else if e_slowDirection != e_epochDirection
+                e_state := STATE_WAIT_TREND
+                e_epochDirection := DIRECTION_NONE
+                e_epochStartTime := na
+                e_opportunityActive := false
+                e_outcome := OUTCOME_NO_OPPORTUNITY
+                e_outcomeDirection := DIRECTION_NONE
+                e_reason := REASON_SLOW_CONTEXT_LOST
+                e_eventPulse := EVENT_CONTEXT_RESET
+            else
+                if array.size(e_frozenCandidatePrices) > 0
+                    for e_i = 0 to array.size(e_frozenCandidatePrices) - 1
+                        float e_candidatePrice = array.get(e_frozenCandidatePrices, e_i)
+                        bool e_consumedNow = e_epochDirection == DIRECTION_LONG ? e_high >= e_candidatePrice : e_low <= e_candidatePrice
+                        if e_consumedNow
+                            array.set(e_frozenCandidateConsumed, e_i, true)
+                e_reactionAge += 1
+                if e_reactionAge > MAX_REACTION_BARS
+                    e_state := STATE_WAIT_CLEAR
+                    e_opportunityActive := false
+                    e_outcome := OUTCOME_NO_OPPORTUNITY
+                    e_outcomeDirection := DIRECTION_NONE
+                    e_reason := REASON_REACTION_EXPIRED
+                    e_eventPulse := EVENT_EXPIRED
+                else
+                    bool e_laterReclaim = e_epochDirection == DIRECTION_LONG ? e_fastDirection == DIRECTION_LONG and e_close > e_reactionHigh and e_close > e_cloudUpper : e_fastDirection == DIRECTION_SHORT and e_close < e_reactionLow and e_close < e_cloudLower
+                    if not e_laterReclaim
+                        e_reason := REASON_WAIT_LATER_RECLAIM
+                    else
+                        float e_selectedPrice = na
+                        int e_selectedSource = LEVEL_UNKNOWN
+                        int e_selectedTime = na
+                        if array.size(e_frozenCandidatePrices) > 0
+                            for e_i = 0 to array.size(e_frozenCandidatePrices) - 1
+                                float e_candidatePrice = array.get(e_frozenCandidatePrices, e_i)
+                                int e_candidateSource = array.get(e_frozenCandidateSources, e_i)
+                                int e_candidateTime = array.get(e_frozenCandidateTimes, e_i)
+                                bool e_candidateConsumed = array.get(e_frozenCandidateConsumed, e_i)
+                                bool e_candidateForward = e_epochDirection == DIRECTION_LONG ? e_candidatePrice > e_high : e_candidatePrice < e_low
+                                if not e_candidateConsumed and e_candidateForward
+                                    bool e_candidateBetter = na(e_selectedPrice) or f_candidate_before(e_epochDirection, e_candidatePrice, e_candidateSource, e_candidateTime, e_selectedPrice, e_selectedSource, e_selectedTime)
+                                    if e_candidateBetter
+                                        e_selectedPrice := e_candidatePrice
+                                        e_selectedSource := e_candidateSource
+                                        e_selectedTime := e_candidateTime
+
+                        e_opportunityDirection := e_epochDirection
+                        e_opportunityTime := e_time
+                        e_entryReference := e_close
+                        e_invalidation := e_frozenInvalidation
+                        e_risk := e_opportunityDirection == DIRECTION_LONG ? e_entryReference - e_invalidation : e_invalidation - e_entryReference
+                        e_nextNamedLevel := e_selectedPrice
+                        e_nextNamedLevelSource := e_selectedSource
+                        e_nextNamedLevelProvenanceTime := e_selectedTime
+                        e_space := na(e_selectedPrice) ? na : e_opportunityDirection == DIRECTION_LONG ? e_selectedPrice - e_entryReference : e_entryReference - e_selectedPrice
+                        e_spaceR := not na(e_space) and e_risk > 0 ? e_space / e_risk : na
+
+                        if e_risk <= 2.0 * e_minimumTick or na(e_selectedPrice)
+                            e_nextNamedLevel := na
+                            e_nextNamedLevelSource := LEVEL_UNKNOWN
+                            e_nextNamedLevelProvenanceTime := na
+                            e_space := na
+                            e_spaceR := na
+                            e_state := STATE_WAIT_CLEAR
+                            e_opportunityActive := false
+                            e_outcome := OUTCOME_NO_OPPORTUNITY
+                            e_outcomeDirection := DIRECTION_NONE
+                            e_reason := REASON_SPACE_UNKNOWN
+                            e_eventPulse := EVENT_SPACE_UNKNOWN
+                        else if e_spaceR < MINIMUM_SPACE_R
+                            e_state := STATE_WAIT_CLEAR
+                            e_opportunityActive := false
+                            e_outcome := OUTCOME_DONT_CHASE
+                            e_outcomeDirection := e_opportunityDirection
+                            e_reason := REASON_SPACE_LT_1R
+                            e_eventPulse := EVENT_DONT_CHASE
+                        else
+                            e_state := STATE_ACTIVE
+                            e_opportunityActive := true
+                            e_activeAge := 0
+                            e_outcomeDirection := e_opportunityDirection
+                            e_markerPrice := e_entryReference
+                            if e_opportunityDirection == DIRECTION_LONG
+                                e_outcome := OUTCOME_MAIN_LONG
+                                e_eventPulse := EVENT_MAIN_LONG
+                            else
+                                e_outcome := OUTCOME_MAIN_SHORT
+                                e_eventPulse := EVENT_MAIN_SHORT
+                            e_reason := REASON_MAIN_OPPORTUNITY_ACTIVE
+
+        else if e_state == STATE_ACTIVE
+            bool e_activeInvalidated = e_opportunityDirection == DIRECTION_LONG ? e_close < e_invalidation : e_close > e_invalidation
+            bool e_activeTargetReached = not na(e_nextNamedLevel) and (e_opportunityDirection == DIRECTION_LONG ? e_high >= e_nextNamedLevel : e_low <= e_nextNamedLevel)
+            if e_activeInvalidated
+                bool e_activeAlsoLostSlow = e_slowDirection != e_epochDirection
+                e_opportunityActive := false
+                e_outcome := OUTCOME_NO_OPPORTUNITY
+                e_outcomeDirection := DIRECTION_NONE
+                e_reason := REASON_FROZEN_INVALIDATION_BROKEN
+                e_eventPulse := EVENT_INVALIDATED
+                e_markerPrice := e_invalidation
+                if e_activeAlsoLostSlow
+                    e_state := STATE_WAIT_TREND
+                    e_epochDirection := DIRECTION_NONE
+                    e_epochStartTime := na
+                else
+                    e_state := STATE_WAIT_CLEAR
+            else if e_activeTargetReached
+                bool e_targetAlsoLostSlow = e_slowDirection != e_epochDirection
+                e_opportunityActive := false
+                e_outcome := OUTCOME_NO_OPPORTUNITY
+                e_outcomeDirection := DIRECTION_NONE
+                e_reason := REASON_TARGET_REACHED
+                e_eventPulse := EVENT_TARGET_REACHED
+                if e_targetAlsoLostSlow
+                    e_state := STATE_WAIT_TREND
+                    e_epochDirection := DIRECTION_NONE
+                    e_epochStartTime := na
+                else
+                    e_state := STATE_WAIT_CLEAR
+            else if e_slowDirection != e_epochDirection
+                e_state := STATE_WAIT_TREND
+                e_epochDirection := DIRECTION_NONE
+                e_epochStartTime := na
+                e_opportunityActive := false
+                e_outcome := OUTCOME_NO_OPPORTUNITY
+                e_outcomeDirection := DIRECTION_NONE
+                e_reason := REASON_SLOW_CONTEXT_LOST
+                e_eventPulse := EVENT_INVALIDATED
+            else
+                e_activeAge += 1
+                if e_activeAge > MAX_ACTIVE_BARS
+                    e_state := STATE_WAIT_CLEAR
+                    e_opportunityActive := false
+                    e_outcome := OUTCOME_NO_OPPORTUNITY
+                    e_outcomeDirection := DIRECTION_NONE
+                    e_reason := REASON_ACTIVE_EXPIRED
+                    e_eventPulse := EVENT_EXPIRED
+                else
+                    e_reason := REASON_MAIN_OPPORTUNITY_ACTIVE
+
+        else if e_epochDirection != DIRECTION_NONE and e_slowDirection != e_epochDirection
+            e_state := STATE_WAIT_TREND
+            e_epochDirection := DIRECTION_NONE
+            e_epochStartTime := na
+            e_opportunityActive := false
+            e_outcome := OUTCOME_NO_OPPORTUNITY
+            e_outcomeDirection := DIRECTION_NONE
+            e_reason := REASON_SLOW_CONTEXT_LOST
+            e_eventPulse := EVENT_CONTEXT_RESET
+
+        else if e_epochDirection == DIRECTION_NONE
+            if e_slowDirection == DIRECTION_NONE
+                e_state := STATE_WAIT_TREND
+                e_outcome := OUTCOME_NO_OPPORTUNITY
+                e_outcomeDirection := DIRECTION_NONE
+                e_reason := REASON_WAIT_SLOW_TREND
+            else
+                e_state := STATE_WAIT_CLEAR
+                e_epochDirection := e_slowDirection
+                e_epochStartTime := e_time
+                e_episodeStartTime := na
+                e_priorExcursion := na
+                e_priorExcursionTime := na
+                e_pullbackTime := na
+                e_reactionHigh := na
+                e_reactionLow := na
+                e_frozenInvalidation := na
+                e_reactionAge := 0
+                e_activeAge := 0
+                e_opportunityActive := false
+                e_opportunityDirection := DIRECTION_NONE
+                e_opportunityTime := na
+                e_entryReference := na
+                e_invalidation := na
+                e_nextNamedLevel := na
+                e_nextNamedLevelSource := LEVEL_UNKNOWN
+                e_nextNamedLevelProvenanceTime := na
+                e_risk := na
+                e_space := na
+                e_spaceR := na
+                e_outcome := OUTCOME_NO_OPPORTUNITY
+                e_outcomeDirection := DIRECTION_NONE
+                e_reason := REASON_EPOCH_STARTED
+                array.clear(e_frozenCandidatePrices)
+                array.clear(e_frozenCandidateSources)
+                array.clear(e_frozenCandidateTimes)
+                array.clear(e_frozenCandidateConsumed)
+
+        else if e_state == STATE_WAIT_CLEAR
+            bool e_fullDeparture = e_epochDirection == DIRECTION_LONG ? e_fastDirection == DIRECTION_LONG and e_low > e_cloudUpper and e_close > e_cloudUpper : e_fastDirection == DIRECTION_SHORT and e_high < e_cloudLower and e_close < e_cloudLower
+            if e_fullDeparture
+                e_state := STATE_ARMED
+                e_episodeStartTime := e_time
+                e_priorExcursion := e_epochDirection == DIRECTION_LONG ? e_high : e_low
+                e_priorExcursionTime := e_time
+                e_pullbackTime := na
+                e_reactionHigh := na
+                e_reactionLow := na
+                e_frozenInvalidation := na
+                e_reactionAge := 0
+                e_activeAge := 0
+                e_opportunityActive := false
+                e_opportunityDirection := DIRECTION_NONE
+                e_opportunityTime := na
+                e_entryReference := na
+                e_invalidation := na
+                e_nextNamedLevel := na
+                e_nextNamedLevelSource := LEVEL_UNKNOWN
+                e_nextNamedLevelProvenanceTime := na
+                e_risk := na
+                e_space := na
+                e_spaceR := na
+                e_outcome := OUTCOME_NO_OPPORTUNITY
+                e_outcomeDirection := DIRECTION_NONE
+                e_reason := REASON_EPISODE_ARMED
+                array.clear(e_frozenCandidatePrices)
+                array.clear(e_frozenCandidateSources)
+                array.clear(e_frozenCandidateTimes)
+                array.clear(e_frozenCandidateConsumed)
+            else
+                e_reason := REASON_WAIT_FULL_CLEAR
+
+        else if e_state == STATE_ARMED
+            bool e_firstTouch = e_epochDirection == DIRECTION_LONG ? e_low <= e_cloudUpper : e_high >= e_cloudLower
+            if e_firstTouch
+                e_pullbackTime := e_time
+                e_reactionHigh := e_high
+                e_reactionLow := e_low
+                e_frozenInvalidation := e_epochDirection == DIRECTION_LONG ? math.min(e_low, e_ema48) - 2.0 * e_minimumTick : math.max(e_high, e_ema48) + 2.0 * e_minimumTick
+                e_reactionAge := 0
+                e_state := STATE_WAIT_REACTION
+                e_outcomeDirection := e_epochDirection
+                array.clear(e_frozenCandidatePrices)
+                array.clear(e_frozenCandidateSources)
+                array.clear(e_frozenCandidateTimes)
+                array.clear(e_frozenCandidateConsumed)
+
+                bool e_priorForwardAtTouch = not na(e_priorExcursion) and (e_epochDirection == DIRECTION_LONG ? e_priorExcursion > e_high : e_priorExcursion < e_low)
+                if e_priorForwardAtTouch
+                    array.push(e_frozenCandidatePrices, e_priorExcursion)
+                    array.push(e_frozenCandidateSources, LEVEL_PRIOR_EXCURSION_10M)
+                    array.push(e_frozenCandidateTimes, e_priorExcursionTime)
+                    array.push(e_frozenCandidateConsumed, false)
+
+                if e_epochDirection == DIRECTION_LONG and array.size(e_pivotHighPrices) > 0
+                    for e_i = 0 to array.size(e_pivotHighPrices) - 1
+                        float e_candidatePrice = array.get(e_pivotHighPrices, e_i)
+                        bool e_candidateConsumed = array.get(e_pivotHighConsumed, e_i)
+                        if not e_candidateConsumed and e_candidatePrice > e_high
+                            array.push(e_frozenCandidatePrices, e_candidatePrice)
+                            array.push(e_frozenCandidateSources, LEVEL_CONFIRMED_PIVOT_10M)
+                            array.push(e_frozenCandidateTimes, array.get(e_pivotHighTimes, e_i))
+                            array.push(e_frozenCandidateConsumed, false)
+                if e_epochDirection == DIRECTION_SHORT and array.size(e_pivotLowPrices) > 0
+                    for e_i = 0 to array.size(e_pivotLowPrices) - 1
+                        float e_candidatePrice = array.get(e_pivotLowPrices, e_i)
+                        bool e_candidateConsumed = array.get(e_pivotLowConsumed, e_i)
+                        if not e_candidateConsumed and e_candidatePrice < e_low
+                            array.push(e_frozenCandidatePrices, e_candidatePrice)
+                            array.push(e_frozenCandidateSources, LEVEL_CONFIRMED_PIVOT_10M)
+                            array.push(e_frozenCandidateTimes, array.get(e_pivotLowTimes, e_i))
+                            array.push(e_frozenCandidateConsumed, false)
+                if e_epochDirection == DIRECTION_LONG and not na(e_previousDayHigh) and not e_previousDayHighConsumed and e_previousDayHigh > e_high
+                    array.push(e_frozenCandidatePrices, e_previousDayHigh)
+                    array.push(e_frozenCandidateSources, LEVEL_PREVIOUS_COMPLETED_DAY_HIGH)
+                    array.push(e_frozenCandidateTimes, e_previousDayAvailableTime)
+                    array.push(e_frozenCandidateConsumed, false)
+                if e_epochDirection == DIRECTION_SHORT and not na(e_previousDayLow) and not e_previousDayLowConsumed and e_previousDayLow < e_low
+                    array.push(e_frozenCandidatePrices, e_previousDayLow)
+                    array.push(e_frozenCandidateSources, LEVEL_PREVIOUS_COMPLETED_DAY_LOW)
+                    array.push(e_frozenCandidateTimes, e_previousDayAvailableTime)
+                    array.push(e_frozenCandidateConsumed, false)
+
+                // Freeze an ordered candidate set at touch: nearest price,
+                // then source priority, then earliest causal provenance.
+                int e_frozenCount = array.size(e_frozenCandidatePrices)
+                if e_frozenCount > 1
+                    for e_sortIndex = 1 to e_frozenCount - 1
+                        float e_sortPrice = array.get(e_frozenCandidatePrices, e_sortIndex)
+                        int e_sortSource = array.get(e_frozenCandidateSources, e_sortIndex)
+                        int e_sortTime = array.get(e_frozenCandidateTimes, e_sortIndex)
+                        bool e_sortConsumed = array.get(e_frozenCandidateConsumed, e_sortIndex)
+                        int e_insertIndex = e_sortIndex - 1
+                        while e_insertIndex >= 0
+                            bool e_sortBefore = f_candidate_before(e_epochDirection, e_sortPrice, e_sortSource, e_sortTime, array.get(e_frozenCandidatePrices, e_insertIndex), array.get(e_frozenCandidateSources, e_insertIndex), array.get(e_frozenCandidateTimes, e_insertIndex))
+                            if not e_sortBefore
+                                break
+                            array.set(e_frozenCandidatePrices, e_insertIndex + 1, array.get(e_frozenCandidatePrices, e_insertIndex))
+                            array.set(e_frozenCandidateSources, e_insertIndex + 1, array.get(e_frozenCandidateSources, e_insertIndex))
+                            array.set(e_frozenCandidateTimes, e_insertIndex + 1, array.get(e_frozenCandidateTimes, e_insertIndex))
+                            array.set(e_frozenCandidateConsumed, e_insertIndex + 1, array.get(e_frozenCandidateConsumed, e_insertIndex))
+                            e_insertIndex -= 1
+                        array.set(e_frozenCandidatePrices, e_insertIndex + 1, e_sortPrice)
+                        array.set(e_frozenCandidateSources, e_insertIndex + 1, e_sortSource)
+                        array.set(e_frozenCandidateTimes, e_insertIndex + 1, e_sortTime)
+                        array.set(e_frozenCandidateConsumed, e_insertIndex + 1, e_sortConsumed)
+
+                if e_epochDirection == DIRECTION_LONG
+                    e_outcome := OUTCOME_WATCH_LONG
+                    e_eventPulse := EVENT_WATCH_LONG
+                    e_markerPrice := e_low
+                else
+                    e_outcome := OUTCOME_WATCH_SHORT
+                    e_eventPulse := EVENT_WATCH_SHORT
+                    e_markerPrice := e_high
+                e_reason := REASON_FIRST_PULLBACK_WATCH
+            else
+                if e_epochDirection == DIRECTION_LONG
+                    if na(e_priorExcursion) or e_high > e_priorExcursion
+                        e_priorExcursion := e_high
+                        e_priorExcursionTime := e_time
+                else
+                    if na(e_priorExcursion) or e_low < e_priorExcursion
+                        e_priorExcursion := e_low
+                        e_priorExcursionTime := e_time
+                e_reason := REASON_WAIT_FIRST_PULLBACK
+
+        // Finalize the current ET day only after state logic has consumed
+        // the previous-completed snapshot.
+        if e_currentDayBarCount == 0
+            e_currentDayFirstTime := e_time
+            e_currentDayLastTime := e_time
+            e_currentDayBarCount := 1
+            e_currentDayContiguous := hour(e_time, "America/New_York") == 0 and minute(e_time, "America/New_York") == 0 and second(e_time, "America/New_York") == 0
+        else
+            e_currentDayContiguous := e_currentDayContiguous and e_time - e_currentDayLastTime == PRIMARY_INTERVAL_MS
+            e_currentDayLastTime := e_time
+            e_currentDayBarCount += 1
+        e_currentDayHigh := na(e_currentDayHigh) ? e_high : math.max(e_currentDayHigh, e_high)
+        e_currentDayLow := na(e_currentDayLow) ? e_low : math.min(e_currentDayLow, e_low)
+
+        // Register 2/2 pivots after state advancement.  A pivot becoming
+        // known on the touch bar therefore cannot backfill that episode.
+        if e_contiguousBars >= PIVOT_LEFT_BARS + PIVOT_RIGHT_BARS + 1 and not na(e_newPivotHigh)
+            array.push(e_pivotHighPrices, e_newPivotHigh)
+            array.push(e_pivotHighTimes, e_newPivotHighTime)
+            array.push(e_pivotHighConsumed, false)
+            if array.size(e_pivotHighPrices) > MAX_PIVOT_LEVELS
+                array.shift(e_pivotHighPrices)
+                array.shift(e_pivotHighTimes)
+                array.shift(e_pivotHighConsumed)
+        if e_contiguousBars >= PIVOT_LEFT_BARS + PIVOT_RIGHT_BARS + 1 and not na(e_newPivotLow)
+            array.push(e_pivotLowPrices, e_newPivotLow)
+            array.push(e_pivotLowTimes, e_newPivotLowTime)
+            array.push(e_pivotLowConsumed, false)
+            if array.size(e_pivotLowPrices) > MAX_PIVOT_LEVELS
+                array.shift(e_pivotLowPrices)
+                array.shift(e_pivotLowTimes)
+                array.shift(e_pivotLowConsumed)
+// PRIMARY10M_CANONICAL_R3_END phase1-10m-primary-opportunity-3.0
+
+f_price(float value) =>
+    na(value) ? "—" : str.tostring(value, format.mintick)
+
+f_r(float value) =>
+    na(value) ? "—" : str.tostring(value, "#0.00") + "R"
+
+f_time(int value) =>
+    na(value) ? "—" : str.format_time(value, "MM-dd HH:mm", "America/New_York")
+
+f_structure_text() =>
+    e_slowDirection == DIRECTION_LONG ? (e_fastDirection == DIRECTION_SHORT ? "慢多｜5/12 暂空" : e_fastDirection == DIRECTION_LONG ? "慢多｜5/12 同多" : "慢多｜5/12 中性") : e_slowDirection == DIRECTION_SHORT ? (e_fastDirection == DIRECTION_LONG ? "慢空｜5/12 暂多" : e_fastDirection == DIRECTION_SHORT ? "慢空｜5/12 同空" : "慢空｜5/12 中性") : "慢结构中性"
+
+f_state_text(int state) =>
+    state == STATE_DISABLED ? "DISABLED" : state == STATE_WAIT_TREND ? "WAIT_TREND" : state == STATE_WAIT_CLEAR ? "WAIT_CLEAR" : state == STATE_ARMED ? "ARMED" : state == STATE_WAIT_REACTION ? "WAIT_REACTION" : "ACTIVE"
+
+f_reason_text(int reason) =>
+    reason == REASON_DISABLED ? "宿主合同未满足" : reason == REASON_DATA_INVALID ? "数据无效，fail closed" : reason == REASON_DATA_DUPLICATE_IGNORED ? "重复时间戳未推进" : reason == REASON_DATA_NON_MONOTONIC ? "倒序时间戳，已重置" : reason == REASON_DATA_GAP_RESET ? "10m 时间缺口，已重置" : reason == REASON_WAIT_SLOW_TREND ? "等待 EMA21/48 慢方向" : reason == REASON_EPOCH_STARTED ? "slow epoch 已建立" : reason == REASON_WAIT_FULL_CLEAR ? "等待完整离云后 rearm" : reason == REASON_EPISODE_ARMED ? "新 episode 已 armed" : reason == REASON_WAIT_FIRST_PULLBACK ? "等待首次 later 触云" : reason == REASON_FIRST_PULLBACK_WATCH ? "观察中：等待 later confirmed reclaim / 空间待核验" : reason == REASON_WAIT_LATER_RECLAIM ? "触线本身不确认" : reason == REASON_REACTION_EXPIRED ? "反应窗口到期；等待 clear" : reason == REASON_SLOW_CONTEXT_LOST ? "慢结构失效/切换" : reason == REASON_FROZEN_INVALIDATION_BROKEN ? "冻结失效位被 confirmed close 破坏" : reason == REASON_SPACE_UNKNOWN ? "空间未知｜无大机会" : reason == REASON_SPACE_LT_1R ? "前方不足 1R｜不追" : reason == REASON_MAIN_OPPORTUNITY_ACTIVE ? "主机会 active｜交给 3m 择时" : reason == REASON_TARGET_REACHED ? "具名目标已到" : "active 到期；等待 clear"
+
+f_reason_card_text() =>
+    e_reason == REASON_DISABLED ? "宿主合同未满足" : e_reason == REASON_DATA_INVALID ? "数据无效｜已停用" : e_reason == REASON_DATA_DUPLICATE_IGNORED ? "重复 K｜未推进" : e_reason == REASON_DATA_NON_MONOTONIC ? "时间倒序｜已重置" : e_reason == REASON_DATA_GAP_RESET ? "10m 缺口｜已重置" : e_reason == REASON_WAIT_SLOW_TREND ? "21/48 尚无慢方向" : e_reason == REASON_EPOCH_STARTED ? "21/48 方向已识别" : e_reason == REASON_WAIT_FULL_CLEAR ? "尚未完整离开 5/12 云" : e_reason == REASON_EPISODE_ARMED ? "已离云｜等首次回踩" : e_reason == REASON_WAIT_FIRST_PULLBACK ? "等后续首次回踩 5/12" : e_reason == REASON_FIRST_PULLBACK_WATCH ? "已触云｜等后续收回+空间" : e_reason == REASON_WAIT_LATER_RECLAIM ? "仅触云｜尚未确认收回" : e_reason == REASON_REACTION_EXPIRED ? "反应过期｜等离云重置" : e_reason == REASON_SLOW_CONTEXT_LOST ? "21/48 方向已失效" : e_reason == REASON_FROZEN_INVALIDATION_BROKEN ? "确认收盘已破保护" : e_reason == REASON_SPACE_UNKNOWN ? "无具名目标｜不成计划" : e_reason == REASON_SPACE_LT_1R ? "目标太近｜空间 <1R" : e_reason == REASON_MAIN_OPPORTUNITY_ACTIVE ? "10m 条件完整｜交给 3m" : e_reason == REASON_TARGET_REACHED ? "冻结目标已到" : e_reason == REASON_ACTIVE_EXPIRED ? "计划超时｜等重新离云" : "未知原因"
+
+bool uiInvalidatedWasPlan = e_eventPulse == EVENT_INVALIDATED and not na(e_opportunityTime)
+int uiInvalidatedDirection = e_eventPulse != EVENT_INVALIDATED ? DIRECTION_NONE : e_opportunityDirection != DIRECTION_NONE ? e_opportunityDirection : not na(e_frozenInvalidation) and e_close < e_frozenInvalidation ? DIRECTION_LONG : not na(e_frozenInvalidation) and e_close > e_frozenInvalidation ? DIRECTION_SHORT : DIRECTION_NONE
+
+f_outcome_text() =>
+    e_eventPulse == EVENT_INVALIDATED ? (uiInvalidatedWasPlan ? (uiInvalidatedDirection == DIRECTION_LONG ? "多计划失效｜结束" : uiInvalidatedDirection == DIRECTION_SHORT ? "空计划失效｜结束" : "计划失效｜结束") : (uiInvalidatedDirection == DIRECTION_LONG ? "多观察失效｜结束" : uiInvalidatedDirection == DIRECTION_SHORT ? "空观察失效｜结束" : "观察失效｜结束")) : e_eventPulse == EVENT_TARGET_REACHED ? (e_opportunityDirection == DIRECTION_LONG ? "多计划到达｜结束" : "空计划到达｜结束") : e_eventPulse == EVENT_EXPIRED ? (not na(e_opportunityTime) ? "计划到期｜等新计划" : "观察到期｜等新机会") : e_outcome == OUTCOME_WATCH_LONG ? "多观察｜未授权" : e_outcome == OUTCOME_WATCH_SHORT ? "空观察｜未授权" : e_outcome == OUTCOME_MAIN_LONG ? "多计划｜等 3m 多入" : e_outcome == OUTCOME_MAIN_SHORT ? "空计划｜等 3m 空入" : e_outcome == OUTCOME_DONT_CHASE ? "不追" : "等待 10m 计划"
+
+f_trigger_text() =>
+    e_outcome == OUTCOME_MAIN_LONG ? "等待 3m 多入" : e_outcome == OUTCOME_MAIN_SHORT ? "等待 3m 空入" : e_outcome == OUTCOME_WATCH_LONG or e_outcome == OUTCOME_WATCH_SHORT ? "仅观察｜不可入场" : "—"
+
+float shownEma5 = showEmaContext and e_modeOk ? e_ema5 : na
+float shownEma12 = showEmaContext and e_modeOk ? e_ema12 : na
+float shownEma21 = showEmaContext and e_modeOk ? e_ema21 : na
+float shownEma48 = showEmaContext and e_modeOk ? e_ema48 : na
+p5 = plot(shownEma5, "Ripster EMA5｜hl2", color=color.new(color.green, 0), linewidth=2)
+p12 = plot(shownEma12, "Ripster EMA12｜hl2", color=color.new(color.red, 0), linewidth=2)
+fill(p5, p12, color=showEmaContext ? (e_ema5 >= e_ema12 ? color.new(color.green, 72) : color.new(color.red, 72)) : na, title="Ripster 5/12 Cloud")
+plot(shownEma21, "慢结构 EMA21｜close", color=color.rgb(255, 193, 7), linewidth=2)
+plot(shownEma48, "慢结构 EMA48｜close", color=color.blue, linewidth=3)
+
+plotshape(showWatchHistory and e_eventPulse == EVENT_WATCH_LONG ? e_markerPrice : barstate.islast and e_state == STATE_WAIT_REACTION and e_outcome == OUTCOME_WATCH_LONG ? e_reactionLow : na, title="10m 多观察", text="多观察", style=shape.triangleup, location=location.absolute, color=color.new(color.lime, 28), textcolor=color.white, size=size.tiny)
+plotshape(showWatchHistory and e_eventPulse == EVENT_WATCH_SHORT ? e_markerPrice : barstate.islast and e_state == STATE_WAIT_REACTION and e_outcome == OUTCOME_WATCH_SHORT ? e_reactionHigh : na, title="10m 空观察", text="空观察", style=shape.triangledown, location=location.absolute, color=color.new(color.orange, 28), textcolor=color.white, size=size.tiny)
+plotshape(e_eventPulse == EVENT_MAIN_LONG ? e_markerPrice : na, title="10m 多计划", text="多计划", style=shape.labelup, location=location.absolute, color=color.new(color.lime, 0), textcolor=color.white, size=size.small)
+plotshape(e_eventPulse == EVENT_MAIN_SHORT ? e_markerPrice : na, title="10m 空计划", text="空计划", style=shape.labeldown, location=location.absolute, color=color.new(color.orange, 0), textcolor=color.white, size=size.small)
+
+plot(showPlanLevels and e_opportunityActive ? e_entryReference : na, "当前 entry_reference", color=color.new(color.aqua, 0), linewidth=1, style=plot.style_linebr)
+plot(showPlanLevels and e_opportunityActive ? e_invalidation : na, "当前 invalidation", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(showPlanLevels and e_opportunityActive ? e_nextNamedLevel : na, "当前 named target", color=color.new(color.lime, 0), linewidth=2, style=plot.style_linebr)
+
+plot(e_state, "AUDIT｜state", display=display.data_window)
+plot(e_eventPulse, "AUDIT｜event", display=display.data_window)
+plot(e_reason, "AUDIT｜reason", display=display.data_window)
+plot(e_epochStartTime, "AUDIT｜epoch start ms", display=display.data_window)
+plot(e_episodeStartTime, "AUDIT｜episode start ms", display=display.data_window)
+plot(e_pullbackTime, "AUDIT｜pullback ms", display=display.data_window)
+plot(e_opportunityTime, "AUDIT｜opportunity ms", display=display.data_window)
+plot(e_nextNamedLevelSource, "AUDIT｜target source", display=display.data_window)
+plot(e_spaceR, "AUDIT｜space_R", display=display.data_window)
+plot(e_opportunityActive ? 1 : 0, "AUDIT｜3m permission", display=display.data_window)
+
+bool cardPlanContext = e_opportunityActive or not na(e_opportunityTime) and (e_eventPulse == EVENT_INVALIDATED or e_eventPulse == EVENT_TARGET_REACHED or e_eventPulse == EVENT_EXPIRED)
+var table card = table.new(position.top_right, 2, 5, bgcolor=color.new(color.black, 8), frame_color=color.new(color.white, 55), frame_width=1)
+f_row(int row, string left, string right, color rightColor) =>
+    table.cell(card, 0, row, left, text_color=color.white, text_halign=text.align_left)
+    table.cell(card, 1, row, right, text_color=rightColor, text_halign=text.align_right)
+
+if barstate.islast
+    if showCard
+        f_row(0, "现在做", f_outcome_text(), e_eventPulse == EVENT_INVALIDATED ? color.red : e_eventPulse == EVENT_TARGET_REACHED ? color.aqua : e_outcome == OUTCOME_MAIN_LONG ? color.lime : e_outcome == OUTCOME_MAIN_SHORT ? color.orange : e_outcome == OUTCOME_WATCH_LONG or e_outcome == OUTCOME_WATCH_SHORT ? color.aqua : color.white)
+        f_row(1, "原因", f_reason_card_text(), color.white)
+        f_row(2, "触发", f_trigger_text(), color.white)
+        f_row(3, "失效", cardPlanContext ? f_price(e_invalidation) : "—", color.white)
+        f_row(4, "目标", cardPlanContext ? f_price(e_nextNamedLevel) + "｜" + f_source_card_text(e_nextNamedLevelSource) : "—", color.white)
+    else
+        table.clear(card, 0, 0, 1, 4)
