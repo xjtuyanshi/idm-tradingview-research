@@ -122,15 +122,15 @@ def standard_bands() -> tuple[NamedBand, NamedBand]:
     return support_band(), resistance_band()
 
 
-def july31_mandatory_replay() -> tuple[
+def synthetic_dual_ready_replay() -> tuple[
     tuple[TenMinuteBar, ...],
     tuple[tuple[NamedBand, ...], ...],
     tuple[PriorAtrContext, ...],
 ]:
-    """09:30 short, accepted-break lock, 10:30 clear, 11:30 long."""
+    """Synthetic short/long READY chain for producer state-machine coverage."""
 
     bars = (
-        # Required positive A: visible only at 09:40 ET.
+        # Synthetic short READY, visible only at 09:40 ET.
         bar(9, 30, 7478.0, 7486.3, 7462.8, 7465.1),
         # Strictly later full clear below the old resistance band.
         bar(9, 40, 7450.0, 7454.0, 7440.0, 7448.0),
@@ -147,9 +147,8 @@ def july31_mandatory_replay() -> tuple[
         bar(11, 0, 7438.0, 7441.0, 7431.0, 7439.0),
         bar(11, 10, 7439.0, 7440.0, 7429.0, 7434.0),
         bar(11, 20, 7434.0, 7438.0, 7426.0, 7431.0),
-        # Required positive B: same-bar light sweep/reclaim, visible 11:40 ET.
-        # The handoff fixes low/close but not high; 7443.8 keeps the frozen
-        # upper SATy trigger at >=1R under the explicit 0.002 ATR/2-tick buffer.
+        # Synthetic long READY, visible at 11:40 ET.  This is not the accepted
+        # real July 31 11:40 replay, whose producer result was SPACE_LT_1R.
         bar(11, 30, 7430.0, 7443.8, 7420.9, 7443.5),
     )
     bands = tuple(standard_bands() for _ in bars)

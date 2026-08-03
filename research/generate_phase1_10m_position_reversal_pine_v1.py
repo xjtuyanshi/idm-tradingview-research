@@ -874,6 +874,49 @@ CANONICAL_BLOCK = PINE_SOURCE[
 CANONICAL_BLOCK_SHA256 = sha256(CANONICAL_BLOCK.encode("utf-8")).hexdigest()
 
 
+def _canonical_slice(start_line: str, end_line: str) -> str:
+    """Return an exact line-bounded fragment from the canonical standalone source.
+
+    The global-owner generator consumes these fragments through a token-aware
+    namespace adapter.  This keeps the accepted standalone source as the only
+    POSITION_REVERSAL producer truth; no generated Pine is regex-patched and the
+    standalone render remains byte-identical.
+    """
+
+    lines = PINE_SOURCE.splitlines()
+    try:
+        start = lines.index(start_line)
+        end = lines.index(end_line)
+    except ValueError as exc:  # pragma: no cover - generator integrity guard
+        raise RuntimeError("canonical reversal fragment boundary missing") from exc
+    if end < start:
+        raise RuntimeError("canonical reversal fragment boundary is reversed")
+    return "\n".join(lines[start : end + 1]) + "\n"
+
+
+def embedded_source_fragments() -> tuple[str, str, str]:
+    """Expose exact canonical constants, data inputs, and producer core.
+
+    UI-only inputs, plots, table code and standalone alertconditions are excluded.
+    The returned producer core ends at the accepted READY pulse derivation, which
+    is the immutable PlanEnvelope handoff boundary used by the 3m global host.
+    """
+
+    constants = _canonical_slice(
+        f'string PROTOCOL_VERSION = "{PROTOCOL_VERSION}"',
+        'string STABILITY_UNSTABLE = "UNSTABLE"',
+    )
+    data_inputs = _canonical_slice(
+        'bool atrEnabled = input.bool(false, "启用上一完成日 ATR", group="上一完成日 ATR")',
+        'string l4Stability = input.string(STABILITY_PRIOR, "stability", options=[STABILITY_PRIOR, STABILITY_FORMING, STABILITY_UNSTABLE], group="具名位 4｜扩展")',
+    )
+    producer_core = _canonical_slice(
+        'f_role_code(string roleText) => roleText == ROLE_SUPPORT_TEXT ? ROLE_SUPPORT : roleText == ROLE_RESISTANCE_TEXT ? ROLE_RESISTANCE : ROLE_NONE',
+        'bool shortReadyPulse = outwardSurfaceOk and ev == EV_REJECTION_CONFIRMED and st == ST_READY and reason == RS_READY and side == ROLE_RESISTANCE and terminalRegistered and readyIdentityOk and readyNumbersOk and eventSourceDeliveryOk and eventTargetDeliveryOk and eventAtrDeliveryOk',
+    )
+    return constants, data_inputs, producer_core
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")

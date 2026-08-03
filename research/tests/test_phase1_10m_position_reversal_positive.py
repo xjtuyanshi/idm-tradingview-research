@@ -13,12 +13,12 @@ from research.tests.fixture_phase1_10m_position_reversal import (
     LOWER_TRIGGER,
     UPPER_TRIGGER,
     et_ms,
-    july31_mandatory_replay,
+    synthetic_dual_ready_replay,
 )
 
 
-def test_july31_required_short_and_long_are_visible_only_at_10m_close() -> None:
-    bars, bands_by_bar, atr_by_bar = july31_mandatory_replay()
+def test_synthetic_short_and_long_are_visible_only_at_10m_close() -> None:
+    bars, bands_by_bar, atr_by_bar = synthetic_dual_ready_replay()
     engine = PositionReversalEngine()
     observations = [
         engine.ingest(bar, bands, atr)
@@ -87,7 +87,7 @@ def test_july31_required_short_and_long_are_visible_only_at_10m_close() -> None:
 
 
 def test_same_bar_touch_and_reaction_uses_one_terminal_marker() -> None:
-    bars, bands_by_bar, atr_by_bar = july31_mandatory_replay()
+    bars, bands_by_bar, atr_by_bar = synthetic_dual_ready_replay()
     engine = PositionReversalEngine()
     opening = engine.ingest(bars[0], bands_by_bar[0], atr_by_bar[0])
 
