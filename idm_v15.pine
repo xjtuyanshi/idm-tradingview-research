@@ -49,7 +49,7 @@
 indicator("IDM v15", "IDM v15", overlay=true,
      max_lines_count=200, max_labels_count=300)
 
-const string VERSION_ID = "15.5.0-verdict-applied"
+const string VERSION_ID = "15.6.0-divergence-lamps"
 
 // ═══ 2026-07-28 补记：与 Saty 当日实盘的逐条对账（这是 v15.1 的全部理由）═══
 //
@@ -352,6 +352,16 @@ bool showBias = input.bool(true, "显示日线偏向", group=G_BIAS,
 string G_VIEW = "08 · 显示"
 bool showPanel = input.bool(true, "显示面板", group=G_VIEW)
 bool showLedger = input.bool(true, "显示账本", group=G_VIEW)
+bool showDivLamp = input.bool(true, "背离灯（只显示，不触发）★", group=G_VIEW,
+     tooltip="2026-08-06 复盘后新增。V15 裁决对 S2/S3 的原话是「改为画灯 + 标注」，" +
+         "此前只做了『关触发』的一半，『画灯』的一半漏了——于是背离算出来了" +
+         "却什么都不显示。08-06 实测：11:33 / 11:54 / 12:15（正好是当日最低点）" +
+         "/ 13:30 连续四次 3m 底背离，每次之后反弹 6–10 点——持空者全程看不见。" +
+         "灯 = 信息，不 = 入场信号：S3 作为入场在账本上是唯一负贡献（176笔 −0.9R），" +
+         "所以触发保持关闭，灯常亮。")
+bool warnDivAgainst = input.bool(true, "持仓遇反向背离时警示", group=G_VIEW,
+     tooltip="持空时出底背离 / 持多时出顶背离 → 打一个 ⚠ 标签（不自动平仓）。" +
+         "用户原话「这时候假如做空就可以走了」。自动平仓未验证，故只警示。")
 bool showVetoMarks = input.bool(true, "标出被位置闸门否决的信号", group=G_VIEW,
      tooltip="小灰点 = 有 setup 但位置太差被否决。这是 v15 最该看的东西：" +
          "它让你看见【系统忍住没追】的那些时刻。")
@@ -605,6 +615,8 @@ var float pR = 0.0
 var int pBars = 0
 var int pEntryT = na
 var int cdBars = 0
+var string lastDivTxt = "—"
+var int lastDivT = na
 var int dayN = 0
 var int lastDayK = na
 
@@ -639,6 +651,23 @@ if newBar
     if na(lastDayK) or dk != lastDayK
         lastDayK := dk
         dayN := 0
+
+    // ---- 背离记录 + 持仓反向警示 ----
+    if divBull or divBear
+        lastDivTxt := (divBull ? "底背离 @ " : "顶背离 @ ") +
+             str.tostring(sc, format.mintick)
+        lastDivT := time_close
+        if warnDivAgainst and pDir != 0 and
+             ((pDir < 0 and divBull) or (pDir > 0 and divBear))
+            f_keep(label.new(time_close, divBull ? sl : sh,
+                 "⚠ 反向背离", xloc=xloc.bar_time,
+                 style=divBull ? label.style_label_up : label.style_label_down,
+                 color=color.new(color.orange, 0), textcolor=color.black,
+                 size=size.small,
+                 tooltip=(pDir < 0 ? "持空遇底背离" : "持多遇顶背离") +
+                      "——考虑减仓/离场。不自动平仓（该规则未验证）。"))
+            alertQ += "【v15】⚠ 反向背离：" + (pDir < 0 ? "持空遇底背离" :
+                 "持多遇顶背离") + " @ " + str.tostring(sc, format.mintick) + "\n"
 
     // ---- 管理持仓 ----
     if pDir != 0
@@ -848,6 +877,11 @@ if newBar
                          textcolor=color.new(color.gray, 30), size=size.tiny,
                          tooltip="位置闸门否决｜" + candName + "｜" + why))
 
+plotshape(showDivLamp and divBull, "底背离灯", style=shape.triangleup,
+     location=location.belowbar, color=color.new(color.aqua, 0), size=size.tiny)
+plotshape(showDivLamp and divBear, "顶背离灯", style=shape.triangledown,
+     location=location.abovebar, color=color.new(color.orange, 0), size=size.tiny)
+
 if alertQ != ""
     alert(alertQ, alert.freq_once_per_bar_close)
 
@@ -908,7 +942,7 @@ f_fmt(int k) =>
          (array.get(agR, k) >= 0 ? "+" : "") +
          str.tostring(array.get(agR, k), "#.#") + "R"
 
-var table tb = table.new(position.bottom_right, 2, 11, border_width=1,
+var table tb = table.new(position.bottom_right, 2, 12, border_width=1,
      frame_width=1, frame_color=color.new(color.gray, 60))
 
 if barstate.islast
@@ -950,6 +984,15 @@ if barstate.islast
              text_size=size.small)
         // theta 时钟：0DTE 的主导变量。数字标定见 06b 组说明。
         float t1dist = math.abs(f_next_rung(close, 1) - close)
+        table.cell(tb, 0, 11, "最近背离", text_color=color.silver,
+             text_size=size.small)
+        table.cell(tb, 1, 11, lastDivTxt + (na(lastDivT) ? "" :
+             "｜" + str.tostring(math.round((time_close - lastDivT) /
+             60000.0)) + " 分前"),
+             text_color=(not na(lastDivT) and
+                  (time_close - lastDivT) <= 30 * 60000) ? color.orange :
+                  color.silver,
+             text_size=size.small)
         table.cell(tb, 0, 10, "theta 时钟", text_color=color.silver,
              text_size=size.small)
         table.cell(tb, 1, 10,
