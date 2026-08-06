@@ -49,7 +49,7 @@
 indicator("IDM v15", "IDM v15", overlay=true,
      max_lines_count=200, max_labels_count=300)
 
-const string VERSION_ID = "15.6.1-div-alertconditions"
+const string VERSION_ID = "15.6.2-eod-window"
 
 // ═══ 2026-07-28 补记：与 Saty 当日实盘的逐条对账（这是 v15.1 的全部理由）═══
 //
@@ -435,6 +435,16 @@ f_mins_to_close() =>
         m := (16 - hh) * 60 - mm
     m
 float minsToClose = f_mins_to_close()
+
+// 今日 RTH 高低（EOD 窗口用：日振幅/ATR 是「压缩日」的代理判据）
+var float rthHi = na
+var float rthLo = na
+if inRTH and not inRTH[1]
+    rthHi := high
+    rthLo := low
+else if inRTH
+    rthHi := math.max(nz(rthHi, high), high)
+    rthLo := math.min(nz(rthLo, low), low)
 
 float vix1d = useVix1d ? request.security("CBOE:VIX1D", "D", close,
      gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on) : na
@@ -1005,8 +1015,22 @@ if barstate.islast
              text_size=size.small)
         table.cell(tb, 0, 10, "theta 时钟", text_color=color.silver,
              text_size=size.small)
+        // EOD 窗口（2026-08-06 消化 Saty 的收盘剧本：SPXW 7710C +353%，
+        // 见 docs/SATY_EOD_PLAY_2026-08-06.md）。只摆事实：压缩程度 + 整十磁吸位。
+        // 不发信号——四合取里 LB 百万张与 1m 吸筹拿不到/是主观判读。
+        bool eodWin = not na(minsToClose) and minsToClose <= 30
+        float dayRngPct = (not na(rthHi) and atrVal > 0) ?
+             (rthHi - rthLo) / atrVal * 100 : na
+        float rndUp = math.ceil(close / 10) * 10
+        float rndDn = math.floor(close / 10) * 10
         table.cell(tb, 1, 10,
              (na(minsToClose) ? "夜盘（无 0DTE）" :
+              eodWin ?
+                  "EOD 窗口 " + str.tostring(minsToClose, "#") + " 分｜日振幅 " +
+                       str.tostring(dayRngPct, "#") + "% ATR" +
+                       (not na(dayRngPct) and dayRngPct < 60 ? "（压缩日）" : "") +
+                       "｜整十 " + str.tostring(rndDn, "#") + "/" +
+                       str.tostring(rndUp, "#") + "｜系统不入场，事实供人判断" :
                   "距收盘 " + str.tostring(minsToClose, "#") + " 分" +
                   (pDir != 0 ? "｜已持 " + str.tostring(pBars) + "/" +
                        str.tostring(maxHoldBars) + " 根" : "")) +
