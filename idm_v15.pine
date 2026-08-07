@@ -49,7 +49,7 @@
 indicator("IDM v15", "IDM v15", overlay=true,
      max_lines_count=200, max_labels_count=300)
 
-const string VERSION_ID = "15.6.2-eod-window"
+const string VERSION_ID = "16.0.1-all-sessions"
 
 // ═══ 2026-07-28 补记：与 Saty 当日实盘的逐条对账（这是 v15.1 的全部理由）═══
 //
@@ -224,6 +224,31 @@ bool rangeFadeOnly = input.bool(false, "区间态只做「离开边缘」方向�
 
 // ── 05 Setup ──────────────────────────────────────────────────────────────
 string G_SET = "05 · Setup"
+// ══ 00 · 三个简单信号（2026-08-07 用户拍板：「大道至简」重构）═══════════
+// 用户原话：「1. 现在它穿过了 Ripster（更长期的 EMA）上去，反而是一个好的买点。
+//            2. 前面几次 7705 那条线不破然后上去了，这也是好的买点。」
+// 外加既有的背离灯。三个信号，全部【只显示+推送，不自动交易】。
+// 昨夜的教训也修在这里：背离灯没有去重、没锁 RTH，凌晨 1:21 与 1:24
+// 三分钟推了两条底背离，整夜顶/底来回打脸——垃圾推送比没有推送更糟。
+string G_SIMPLE = "00 · 三个简单信号（灯+推送，不交易）"
+bool lampCloud = input.bool(true, "① 慢云突破灯（收盘穿越 EMA34-48 带）",
+     group=G_SIMPLE, tooltip="用户的买点一：穿过更长期的 EMA 云。" +
+         "按 setup 周期收盘确认——结构事件用结构周期，少假突破。")
+bool lampHold = input.bool(true, "② 位守住灯（同位反复不破后收复）",
+     group=G_SIMPLE, tooltip="用户的买点二：7705 那种线，打了 N 次不破然后走。" +
+         "复用 S2 的触及计数（进 ±0.03 ATR 记一次，出 0.05 ATR 才能再记）。")
+bool lampDivOn = input.bool(true, "③ 背离灯", group=G_SIMPLE)
+int lampCooldown = input.int(10, "同向灯冷却（setup K 根数）", minval=0,
+     group=G_SIMPLE, tooltip="修昨夜的刷屏：同方向同类灯 N 根内只亮一次。" +
+         "3m 周期 10 根 = 30 分钟。")
+bool lampsRTHOnly = input.bool(false, "只在 RTH 提示", group=G_SIMPLE,
+     tooltip="用户在北京时间白天盯盘 = ET 夜盘，所以默认【全时段】推。" +
+         "刷屏靠上面的冷却治，不靠掐时段。想只收 RTH 再打开这个。")
+
+bool enEngine = input.bool(false, "启用自动交易引擎【默认关】", group=G_SET,
+     tooltip="2026-08-07 用户拍板关闭：「把那些没用的信号都可以干掉」。" +
+         "综合裁决本来就是零收益发现（1839 格，门槛 |z|>4.2，越过 0 个）——" +
+         "引擎的开/平仓标签与账本是研究工具，不是交易建议。要复验时再打开。")
 bool enFlip = input.bool(true, "S1 趋势翻转（袋子变色 + 站到外侧）", group=G_SET)
 bool enHold = input.bool(false, "S2 位被拒绝【降级为观察，默认关】", group=G_SET,
      tooltip="【V15_LEVEL_RETEST】触及次数不带信息（k≥2 的 z_sel=−1.67）。值得看的是【穿透深度递减】，不是次数。且线上只触发了 12 次，实现本身也很脆。")
@@ -351,7 +376,7 @@ bool showBias = input.bool(true, "显示日线偏向", group=G_BIAS,
 // ── 08 显示 ───────────────────────────────────────────────────────────────
 string G_VIEW = "08 · 显示"
 bool showPanel = input.bool(true, "显示面板", group=G_VIEW)
-bool showLedger = input.bool(true, "显示账本", group=G_VIEW)
+bool showLedger = input.bool(false, "显示账本【引擎关时无意义】", group=G_VIEW)
 bool showDivLamp = input.bool(true, "背离灯（只显示，不触发）★", group=G_VIEW,
      tooltip="2026-08-06 复盘后新增。V15 裁决对 S2/S3 的原话是「改为画灯 + 标注」，" +
          "此前只做了『关触发』的一半，『画灯』的一半漏了——于是背离算出来了" +
@@ -362,7 +387,7 @@ bool showDivLamp = input.bool(true, "背离灯（只显示，不触发）★", g
 bool warnDivAgainst = input.bool(true, "持仓遇反向背离时警示", group=G_VIEW,
      tooltip="持空时出底背离 / 持多时出顶背离 → 打一个 ⚠ 标签（不自动平仓）。" +
          "用户原话「这时候假如做空就可以走了」。自动平仓未验证，故只警示。")
-bool showVetoMarks = input.bool(true, "标出被位置闸门否决的信号", group=G_VIEW,
+bool showVetoMarks = input.bool(false, "标出被位置闸门否决的信号【默认关】", group=G_VIEW,
      tooltip="小灰点 = 有 setup 但位置太差被否决。这是 v15 最该看的东西：" +
          "它让你看见【系统忍住没追】的那些时刻。")
 
@@ -605,8 +630,55 @@ f_div_bear() =>
         float oh = ta.highest(phase, divLookback)
         r := sh >= ph - syminfo.mintick and phase < oh - 1.0
     r
-bool divBull = f_div_bull()
-bool divBear = f_div_bear()
+bool divBullRaw = f_div_bull()
+bool divBearRaw = f_div_bear()
+
+// ── 三个简单信号：统一去重 + RTH 闸 ──────────────────────────────────────
+// fire = 原始条件 且 (RTH 或 允许夜盘) 且 同向冷却已过
+var int lbCU = na
+var int lbCD = na
+var int lbHU = na
+var int lbHD = na
+var int lbDB = na
+var int lbDT = na
+bool okPush = not lampsRTHOnly or inRTH
+float cloudTop = math.max(e34, e48)
+float cloudBot = math.min(e34, e48)
+bool rawCU = lampCloud and newBar and sc > cloudTop and
+     not (sc[1] > cloudTop[1])
+bool rawCD = lampCloud and newBar and sc < cloudBot and
+     not (sc[1] < cloudBot[1])
+bool rawHU = lampHold and newBar and touchN >= holdTouches and
+     not na(watchLvl) and sl <= watchLvl and sc > watchLvl and sc > e13
+bool rawHD = lampHold and newBar and touchN >= holdTouches and
+     not na(watchLvl) and sh >= watchLvl and sc < watchLvl and sc < e13
+
+bool sigCU = false
+bool sigCD = false
+bool sigHU = false
+bool sigHD = false
+bool divBull = false
+bool divBear = false
+if rawCU and okPush and (na(lbCU) or bar_index - lbCU >= lampCooldown)
+    sigCU := true
+    lbCU := bar_index
+if rawCD and okPush and (na(lbCD) or bar_index - lbCD >= lampCooldown)
+    sigCD := true
+    lbCD := bar_index
+if rawHU and okPush and (na(lbHU) or bar_index - lbHU >= lampCooldown)
+    sigHU := true
+    lbHU := bar_index
+if rawHD and okPush and (na(lbHD) or bar_index - lbHD >= lampCooldown)
+    sigHD := true
+    lbHD := bar_index
+if lampDivOn and divBullRaw and okPush and
+     (na(lbDB) or bar_index - lbDB >= lampCooldown)
+    divBull := true
+    lbDB := bar_index
+if lampDivOn and divBearRaw and okPush and
+     (na(lbDT) or bar_index - lbDT >= lampCooldown)
+    divBear := true
+    lbDT := bar_index
 
 // ── 持仓状态 ─────────────────────────────────────────────────────────────
 var int pDir = 0
@@ -756,8 +828,8 @@ if newBar
                 cdBars := cooldownBars
                 pDir := 0
 
-    // ---- 找 setup（只在空仓时）----
-    if pDir == 0
+    // ---- 找 setup（只在空仓时；引擎默认关）----
+    if enEngine and pDir == 0
         int cand = 0
         string candName = ""
         float candProt = na
@@ -891,6 +963,24 @@ plotshape(showDivLamp and divBull, "底背离灯", style=shape.triangleup,
      location=location.belowbar, color=color.new(color.aqua, 0), size=size.tiny)
 plotshape(showDivLamp and divBear, "顶背离灯", style=shape.triangledown,
      location=location.abovebar, color=color.new(color.orange, 0), size=size.tiny)
+plotshape(sigCU, "慢云上破", style=shape.circle, location=location.belowbar,
+     color=color.new(color.teal, 0), size=size.tiny)
+plotshape(sigCD, "慢云下破", style=shape.circle, location=location.abovebar,
+     color=color.new(color.red, 0), size=size.tiny)
+plotshape(sigHU, "位多守住", style=shape.diamond, location=location.belowbar,
+     color=color.new(color.lime, 0), size=size.small)
+plotshape(sigHD, "位空压住", style=shape.diamond, location=location.abovebar,
+     color=color.new(color.orange, 0), size=size.small)
+
+// 六条独立警报条件（顶/底、多/空分开——手机上一眼分方向）
+alertcondition(sigCU, "慢云上破",
+     "【v15】站上慢云(34/48) {{ticker}} @ {{close}}｜用户买点①：穿长期云")
+alertcondition(sigCD, "慢云下破",
+     "【v15】跌破慢云(34/48) {{ticker}} @ {{close}}")
+alertcondition(sigHU, "位多守住",
+     "【v15】位被反复防守后收复 {{ticker}} @ {{close}}｜用户买点②：N 次不破后上去")
+alertcondition(sigHD, "位空压住",
+     "【v15】位被反复压制后跌落 {{ticker}} @ {{close}}")
 
 // ── 背离灯的独立警报条件（2026-08-06，用户拍板：删掉旧体系全部推送，只留这一套）──
 // 顶/底分开建条——同一条 alert 同时承载两个方向，在手机上无法分辨，
@@ -977,7 +1067,8 @@ if barstate.islast
               str.tostring(pT2, format.mintick)) : "｜等T1 " +
               str.tostring(pT1, format.mintick)) :
          (cdBars > 0 ? "冷却中 " + str.tostring(cdBars) + " 根" :
-          "空仓待命｜等 翻转/拒绝/背离 + 位置闸门通过")
+          (enEngine ? "空仓待命｜等 翻转/拒绝/背离 + 位置闸门通过" :
+               "引擎关｜只做：慢云突破 / 位守住 / 背离 三灯"))
     if showPanel
         table.cell(tb, 0, 0, "IDM v15", text_color=color.white,
              bgcolor=color.new(color.blue, 55), text_size=size.small)
