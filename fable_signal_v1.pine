@@ -2,7 +2,7 @@
 indicator("Fable Signal v1", shorttitle="Fable Signal", overlay=true, max_labels_count=500, max_lines_count=300)
 
 // ============================================================
-// Fable Signal v2.6.1 — 交易伙伴（trade buddy），不是自动交易信号。
+// Fable Signal v2.6.2 — 交易伙伴（trade buddy），不是自动交易信号。
 //
 // 【2 年 SPY 数据（2024-08→2026-08，495 交易日）验证结论】
 //   回踩收回事件  n=979  期望 -0.019R  t=-0.64  → 无机械优势
@@ -950,6 +950,8 @@ var label[] rLabel = array.new_label(0)
 
 bool holdMomoLongSig = false
 bool holdMomoShortSig = false
+bool momoDotL = false          // v2.6.2：机会灯微点旗标（pivot 确认 bar 置真）
+bool momoDotR = false
 var float hSupLvlP = na
 var float hResLvlP = na
 
@@ -1014,12 +1016,13 @@ if useHold and barstate.isconfirmed and is10m and not na(pl) and not na(atrD)
         else if sN >= 3 and not na(array.get(sLabel, sHit))
             label.set_text(array.get(sLabel, sHit), "守住×" + str.tostring(sN))
         // 机会灯：同一支撑至少第 2 次守住且这次 RSI 比上次更高（背景参考，无回测证据）
+        // v2.6.2：飘空 label 圆点删除（0.15×日ATR≈10点的悬空大点，用户否决），
+        // 改文件末尾 plotshape 微点贴 K 线下沿（offset=-3 对齐 pivot bar）
         if sN >= 2 and sPivRsi >= sPrevRsi + momoMinRsi
+            momoDotL := true
             if canSignal
                 holdMomoLongSig := true
                 hSupLvlP := sLvl
-            if showMomoDot
-                label.new(sPivBar, sPivPrice - 0.15 * atrD, "", style=label.style_circle, color=color.new(color.teal, 20), size=size.tiny, tooltip="支撑第" + str.tostring(sN) + "次守住·动能抬升——蓄力形态｜RSI " + str.tostring(sPrevRsi, "#.#") + "→" + str.tostring(sPivRsi, "#.#"))
     else if array.size(sPrice) < holdMaxClusters
         array.push(sPrice, sPivPrice)
         array.push(sCount, 1)
@@ -1051,12 +1054,12 @@ if useHold and barstate.isconfirmed and is10m and not na(ph) and not na(atrD)
         else if rN >= 3 and not na(array.get(rLabel, rHit))
             label.set_text(array.get(rLabel, rHit), "拒绝×" + str.tostring(rN))
         // 机会灯镜像：同一压力至少第 2 次拒绝且这次 RSI 比上次更低 → 承压形态
+        // v2.6.2：同支撑侧，飘空 label 删除，改末尾 plotshape 微点贴 K 线上沿
         if rN >= 2 and rPivRsi <= rPrevRsi - momoMinRsi
+            momoDotR := true
             if canSignal
                 holdMomoShortSig := true
                 hResLvlP := rLvl
-            if showMomoDot
-                label.new(rPivBar, rPivPrice + 0.15 * atrD, "", style=label.style_circle, color=color.new(color.red, 20), size=size.tiny, tooltip="压力第" + str.tostring(rN) + "次拒绝·动能转弱——承压形态｜RSI " + str.tostring(rPrevRsi, "#.#") + "→" + str.tostring(rPivRsi, "#.#"))
     else if array.size(rPrice) < holdMaxClusters
         array.push(rPrice, rPivPrice)
         array.push(rCount, 1)
@@ -1113,5 +1116,9 @@ if barstate.islast and useHold
 // ---------------- v2.6 新通道（先 plot 后 alertcondition，拿 46 之后的新号）----------------
 plot(math.round_to_mintick(hSupLvlP), "H_SUP", display=display.none)
 plot(math.round_to_mintick(hResLvlP), "H_RES", display=display.none)
+// v2.6.2 机会灯微点：贴 K 线上下沿的微型圆点（替代飘空 label——那版把点挂在
+// 离 pivot 0.15×日ATR≈10 点的半空，用户实测否决）。offset 对齐 pivot 确认滞后。
+plotshape(momoDotL and showMomoDot, "机会灯·支撑蓄力", style=shape.circle, location=location.belowbar, color=color.new(color.teal, 25), size=size.tiny, offset=-3)
+plotshape(momoDotR and showMomoDot, "机会灯·压力承压", style=shape.circle, location=location.abovebar, color=color.new(color.red, 25), size=size.tiny, offset=-2)
 alertcondition(holdMomoLongSig, "Fable｜支撑反复守住·动能抬升", '支撑反复守住·动能抬升——蓄力形态｜{{ticker}}｜守住位={{plot("H_SUP")}}｜同一支撑至少第2次踩住未收破，且这次触及时RSI比上次更高｜背景参考·不是买入指令｜提示不是订单')
 alertcondition(holdMomoShortSig, "Fable｜压力反复拒绝·动能转弱", '压力反复拒绝·动能转弱——承压形态｜{{ticker}}｜拒绝位={{plot("H_RES")}}｜同一压力至少第2次冲不破，且这次触及时RSI比上次更低｜背景参考·不是卖出指令｜提示不是订单')
