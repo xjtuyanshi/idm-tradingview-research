@@ -2,7 +2,7 @@
 indicator("Fable Signal v1", shorttitle="Fable Signal", overlay=true, max_labels_count=500, max_lines_count=300)
 
 // ============================================================
-// Fable Signal v2.6 — 交易伙伴（trade buddy），不是自动交易信号。
+// Fable Signal v2.6.1 — 交易伙伴（trade buddy），不是自动交易信号。
 //
 // 【2 年 SPY 数据（2024-08→2026-08，495 交易日）验证结论】
 //   回踩收回事件  n=979  期望 -0.019R  t=-0.64  → 无机械优势
@@ -847,27 +847,42 @@ if barstate.isconfirmed and is10m
             preAccLo := math.min(nz(preAccLo, low), low)
     wasNightAcc := inNightAcc
     wasPreAcc := inPreAcc
+    // v2.6.1（2026-08-21 用户实测修复）：原版六值只在 newRthDay 冻结——
+    // 指标更新当天的盘前/夜盘什么都不画（"我啥都没看见"）。改为：
+    // 昨日高低=日线[1]完成值，任何时刻已知，直接实时跟随；
+    // 夜盘/盘前高低=边累积边跟随，夜里就能看到正在生长的极值线；
+    // RTH 内（newRthDay 起）夜盘/盘前自然定格（累计器已停更）。
+    dYdHi := ydHi
+    dYdLo := ydLo
+    if inNightAcc and not na(nightAccHi)
+        dNightHi := nightAccHi
+        dNightLo := nightAccLo
+    if inPreAcc and not na(preAccHi)
+        dPreHi := preAccHi
+        dPreLo := preAccLo
     if newRthDay
-        // 冻结六个当日常量（昨日高低也一并冻结，保证线和右侧价签全天一致）
-        dYdHi := ydHi
-        dYdLo := ydLo
+        // 09:30 定格夜盘/盘前为当日常量，并清空累计器：某天缺盘外 bar
+        //（假日/断档）时不把前一天的值当今天的
         dNightHi := nightAccHi
         dNightLo := nightAccLo
         dPreHi := preAccHi
         dPreLo := preAccLo
-        // 清空累计器：某天缺盘外 bar（假日/断档）时不把前一天的值当今天的
         nightAccHi := na
         nightAccLo := na
         preAccHi := na
         preAccLo := na
 
-// 画线：newRthDay 全删重建（与价签 f_tag 同构的删旧重画模式，天然不重绘）
+// 画线：六值任何一个变了就全删重建（v2.6.1：原版只在 newRthDay 重建，
+// 盘外的实时跟随画不出来）。删旧重画模式与价签 f_tag 同构，天然不重绘。
 var line[] keyLn = array.new_line(0)
+var float keySigPrev = na
 f_keyLine(float p_, color c_, int w_, string sty_) =>
     if not na(p_)
         array.push(keyLn, line.new(bar_index, p_, bar_index + 1, p_, extend=extend.right, color=c_, width=w_, style=sty_))
 
-if barstate.isconfirmed and is10m and newRthDay and showKeyLvls
+float keySigNow = nz(dYdHi) * 1 + nz(dYdLo) * 2 + nz(dNightHi) * 3 + nz(dNightLo) * 5 + nz(dPreHi) * 7 + nz(dPreLo) * 11
+if barstate.isconfirmed and is10m and showKeyLvls and (na(keySigPrev) or keySigPrev != keySigNow)
+    keySigPrev := keySigNow
     if array.size(keyLn) > 0
         for i = 0 to array.size(keyLn) - 1
             line.delete(array.get(keyLn, i))
@@ -938,8 +953,13 @@ bool holdMomoShortSig = false
 var float hSupLvlP = na
 var float hResLvlP = na
 
-// 日界重置：线/标签全删 + 数组全清（隔夜跳空会让昨天的簇失真，另起炉灶）
-if barstate.isconfirmed and is10m and newRthDay
+// 日界重置：线/标签全删 + 数组全清。
+// v2.6.1：日界从 09:30（newRthDay）改为 18:00 ET 新交易会话——原版在开盘
+// 一瞬把整晚攒的守住位清零，而"夜盘反复守住的支撑"恰恰是开盘最该带着的
+// 信息（用户的原始场景就是夜盘守住+动能抬升）；且原版 inRth 门让夜盘
+// 根本不数守住，一并摘除（见下方三处）。
+bool newTradeDay = hhmmET >= 1800 and hhmmET[1] < 1800
+if barstate.isconfirmed and is10m and newTradeDay
     if array.size(sLine) > 0
         for j = 0 to array.size(sLine) - 1
             line lnD = array.get(sLine, j)
@@ -972,7 +992,7 @@ if barstate.isconfirmed and is10m and newRthDay
     array.clear(rLabel)
 
 // 支撑侧：已确认 pivot 低点归簇（容差 holdTolAtr×日ATR）
-if useHold and barstate.isconfirmed and is10m and inRth and not na(pl) and not na(atrD)
+if useHold and barstate.isconfirmed and is10m and not na(pl) and not na(atrD)
     float sPivPrice = pl
     float sPivRsi = rsi14[3]            // pivotlow(3,3) → RSI 取滞后 3 根的历史值
     int sPivBar = bar_index - 3
@@ -1010,7 +1030,7 @@ if useHold and barstate.isconfirmed and is10m and inRth and not na(pl) and not n
         array.push(sLabel, label(na))
 
 // 压力侧：已确认 pivot 高点归簇（支撑侧镜像）
-if useHold and barstate.isconfirmed and is10m and inRth and not na(ph) and not na(atrD)
+if useHold and barstate.isconfirmed and is10m and not na(ph) and not na(atrD)
     float rPivPrice = ph
     float rPivRsi = rsi14[2]            // pivothigh(2,2) → RSI 取滞后 2 根的历史值
     int rPivBar = bar_index - 2
@@ -1047,7 +1067,7 @@ if useHold and barstate.isconfirmed and is10m and inRth and not na(ph) and not n
         array.push(rLabel, label(na))
 
 // 收破处理：每根确认 RTH bar 扫描未破簇（余量口径与关键位模块 broken 判定的 0.10 一致）
-if useHold and barstate.isconfirmed and is10m and inRth and not na(atrD)
+if useHold and barstate.isconfirmed and is10m and not na(atrD)
     if array.size(sPrice) > 0
         for j = 0 to array.size(sPrice) - 1
             if not array.get(sBroken, j) and close < array.get(sPrice, j) - holdBreakAtr * atrD
