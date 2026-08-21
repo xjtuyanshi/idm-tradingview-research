@@ -1,0 +1,1097 @@
+//@version=6
+indicator("Fable Signal v1", shorttitle="Fable Signal", overlay=true, max_labels_count=500, max_lines_count=300)
+
+// ============================================================
+// Fable Signal v2.6 — 交易伙伴（trade buddy），不是自动交易信号。
+//
+// 【2 年 SPY 数据（2024-08→2026-08，495 交易日）验证结论】
+//   回踩收回事件  n=979  期望 -0.019R  t=-0.64  → 无机械优势
+//   关键位反应    n=292  期望 +0.052R  t=+0.64  → 无机械优势（后半段归零）
+//   开盘反转      回测口径 n=144（事件研究 3根后胜率63%,t=1.85）→ 待验，默认关闭
+//   预设变体（时段/趋势强度/止损宽度）在前后两段全部翻转符号 = 噪音特征。
+//   ⇒ 图上的箭头是「结构事件标记」，不是买卖建议。是否进场、进多少，由你决定。
+//
+// 【唯一通过样本外验证的东西：夜盘风险评分】
+//   2026-08-04 独立复核（收盘口径 = 哨兵实际判定口径，464 晚）：
+//     阈值 4.0 → 5.4 次/月；警报夜大异动率 31.7% vs 普通夜 15.1%（2.09×，z=+3.95）
+//     逐日重估 walk-forward（311 晚）: 43% vs 16%（2.6×）——倍数稳健，绝对档位随口径变。
+//   ※ 旧版文件头写的「43% vs 22%」取自影线口径，与收盘口径的警报不一致，已更正。
+//   只预测「幅度」不预测「方向」；最惨的暴跌夜多数仍无法提前预警（覆盖 ~25%）。
+//   用途：收盘时决定隔夜要不要减仓，不是用来下单。
+//   ⚠ 本品种无成交量 → zVol 置零，实际跑的是 5/6 特征版，档位未在本 feed 复验。
+//
+// 【背离——2026-08-04 复核后已推翻旧结论，务必看清】
+//   顶背离(pivot2/2,RSI差≥3) n=146：74% 两小时内不再创新高。
+//     但旧版拿来对比的「52% 基线」是错的（那是"贴近日内高点的所有bar"，不是 pivot）。
+//     正确对照：任何已确认 pivot 高点 = 70.0%（n=1869，样本外 69%）；
+//     创新高但无背离的 pivot = 70.0% → RSI 背离净增量仅 +4.0pp（95%CI −3~+11，
+//     36 变体择优的置换检验 p=0.88）= 统计上等于零。
+//     ⇒ 警示价值来自「已确认 pivot 高点」本身，不是来自 RSI 背离。
+//   顶背离做空 12bar 胜率 43%（同时段随机做空 46%）→ 确认不是做空信号（此结论稳健）。
+//   底背离(pivot3/3,云下≥0.15ATR) n=98：2h 后价更高 61.2%，但同时段基线就有 54.1%，
+//     净增量 +7.2pp（95%CI 含 0，日聚类 t≤1.7，36 变体最优置换 p=0.55）→ 不构成做多依据。
+//   RSI超买: RSI≥85 后1小时 80% 仍超买，但 n=45 只来自 12 个交易日（事件高度重叠）；
+//     各超买区间前向收益 ≈ 0（日聚类 t<0.7）→ 只支持"别做空"，不支持"放心持多"。
+//
+// 【适用范围警告】全部验证数字来自 SPY 10m「含盘前盘后」图。
+//   · 夜盘哨兵 / 风险评分需要盘外 bar：RTH-only 图上会失效或不结算。
+//   · 无成交量的纯指数图：zVol 自动置中性，风险评分仍可用但少一个特征。
+//   · 换品种/换 feed 后，触发频率会变，先用「今日信号数」观察一周再信任。
+// 全部逻辑只用已确认收盘，不重绘；无前视（日线数据用 [1]）。
+// 本脚本在 10 分钟图上工作。
+// ============================================================
+
+// ============================================================
+// 【v2.6 改动说明（2026-08-21）】
+// 1) 纵轴压缩修复：21 条 ATR 阶梯 plot 改为 display=display.none（声明一条不删、
+//    顺序一字不动 → 通道号原样保留），改在文件末尾追加区用 line.new 重画当日一套。
+//    drawing 对象不参与纵轴自动缩放，K 线默认恢复贴身显示。
+//    实盘 7 条警报通道 plot_36/37/40/42/43/44/45 逐一原位，零影响。
+// 2) 关键位（G4）：昨日高/低（日线 [1]+lookahead=昨日完成值，与 atrD/pcD 同款、
+//    因果安全）+ 夜盘高/低(16:00→08:00) + 盘前高/低(08:00→09:30)，
+//    确认 bar 累计、当日第一根 RTH bar 冻结为当日常量——盘中位绝不移动。
+// 3) 守住位检测（G5）：触及=已确认 pivot（支撑 pivotlow(3,3) 滞后3根、
+//    压力 pivothigh(2,2) 滞后2根，复用背离模块，无重绘）。同一价位
+//    （容差 0.06×日ATR）≥2 次守住/拒绝才画线；收破（0.10×日ATR 余量）后
+//    虚线冻结降级。插针快速V回不形成 pivot 的触碰不计数——无重绘的代价。
+// 4) 机会灯：同一位至少第 2 次守住且这次 RSI 比上次更高（压力侧镜像取反）
+//    → 小圆点（悬停见详情）+ 2 条新 alertcondition。无回测证据，
+//    定位=背景参考，与底背离同级，不是买卖指令。
+// 5) 通道纪律：新增 H_SUP/H_RES 两条隐藏 plot 与 2 条 alertcondition 全部
+//    追加在原文件最后一条 alertcondition 之后（先 plot 后 alertcondition，
+//    拿 46 之后的新号）；新输入 6 项（G4/G5）追加在输入区末尾，旧 24 项顺序未动。
+//    indicator() 增加 max_lines_count=300（声明参数不占通道号）。
+// ============================================================
+
+// ---------------- 输入 ----------------
+string G1 = "时段（美东时间）"
+string sigSession = input.session("0930-1520", "信号时段｜15:20 后不再发（尾盘信号无法执行）", group=G1)
+bool includePre = input.bool(false, "盘前也给信号（08:00 起）", group=G1)
+
+string G2 = "模块开关"
+bool useTrend = input.bool(true, "回踩-收回 买卖点", group=G2)
+bool useOpen = input.bool(false, "开盘下杀-快速收复（多）｜出场方式待重测，默认关", group=G2)
+bool useOpenS = input.bool(false, "开盘冲高-快速回落（空）｜未回测默认关", group=G2)
+bool useLevel = input.bool(true, "关键位反应（自动 ATR 触发位）", group=G2)
+bool useDiv = input.bool(true, "RSI 背离警告", group=G2)
+bool useShort = input.bool(true, "允许做空信号", group=G2)
+bool useNight = input.bool(true, "夜盘异动哨兵（距昨收 ≥0.7×日ATR 时提醒）", group=G2)
+bool useRisk = input.bool(true, "夜盘风险评分（收盘前提示今晚是否不安分）", group=G2)
+
+string G3 = "参数（回测校准，改前想清楚）"
+float departMinAtr = input.float(0.12, "离云最小行程（×日ATR）", minval=0.0, step=0.01, group=G3)
+int reclaimBars = input.int(6, "回踩后等收回的最大10m根数", minval=2, maxval=12, group=G3)
+float openDipAtr = input.float(0.15, "开盘下杀最小深度（×日ATR）", minval=0.05, step=0.01, group=G3)
+int openEndHHMM = input.int(1030, "开盘反转窗口截止（HHMM ET）", group=G3)
+float trigPct = input.float(0.236, "触发位距离（×日ATR）", step=0.001, group=G3)
+float rearmAtr = input.float(0.12, "关键位重新武装距离（×日ATR）", step=0.01, group=G3)
+float divMinRsiTop = input.float(3.0, "顶背离最小RSI差（回测校准:3）", step=0.5, group=G3)
+float divMinRsiBot = input.float(1.0, "底背离最小RSI差（回测校准:1）", step=0.5, group=G3)
+bool showLevels = input.bool(true, "画 ATR 关键位", group=G3)
+bool showExt = input.bool(true, "画扩展位（±38.2%~±200%，用作目标参考）", group=G3)
+bool showLvlTags = input.bool(true, "在右侧标出每条位的名称与价格", group=G3)
+bool showCard = input.bool(true, "显示状态卡", group=G3)
+float nightThr = input.float(0.7, "夜盘异动阈值（×日ATR）｜SPY实测3.9次/月·CFD约4.5次/月(双向)", minval=0.3, step=0.05, group=G3)
+float riskThr = input.float(4.0, "风险评分阈值（越高越少报）｜实测≈5.8次/月", step=0.5, group=G3)
+
+// v2.6 新增输入：只许追加在旧 24 项之后（TV 警报重绑按输入顺序重放，旧顺序绝不可动）
+string G4 = "关键位（v2.6）"
+bool showKeyLvls = input.bool(true, "画昨日/夜盘/盘前高低位", group=G4)
+
+string G5 = "守住位检测（v2.6）"
+bool useHold = input.bool(true, "自动检测反复守住/拒绝的位", group=G5)
+float holdTolAtr = input.float(0.06, "同一位聚类容差（×日ATR）", minval=0.01, step=0.01, group=G5)
+float holdBreakAtr = input.float(0.10, "收破判定余量（×日ATR）", minval=0.02, step=0.01, group=G5)
+float momoMinRsi = input.float(1.0, "机会灯最小RSI差（较上次触及）", minval=0.0, step=0.5, group=G5)
+bool showMomoDot = input.bool(true, "显示机会灯小圆点", group=G5)
+
+// ---------------- 基础序列 ----------------
+float e5 = ta.ema(hl2, 5)
+float e12 = ta.ema(hl2, 12)
+float e21 = ta.ema(close, 21)
+float e48 = ta.ema(close, 48)
+float cloudU = math.max(e5, e12)
+float cloudL = math.min(e5, e12)
+bool slowUp = e21 > e48 and close > e48
+bool slowDn = e21 < e48 and close < e48
+float rsi14 = ta.rsi(close, 14)
+
+// 已完成日线 ATR14 与收盘（[1]+lookahead = 昨日完成值，因果安全）
+[atrD, pcD] = request.security(syminfo.tickerid, "D", [ta.atr(14)[1], close[1]], lookahead=barmerge.lookahead_on)
+
+// Saty ATR 完整梯级（±23.6% 触发位 + 扩展位）。
+// 触发位 = 当日方向门槛；扩展位 = 日内常见的到达/反应位，用作目标参考。
+float LT  = pcD - trigPct * atrD
+float UT  = pcD + trigPct * atrD
+float L38 = pcD - 0.382 * atrD
+float U38 = pcD + 0.382 * atrD
+float L50 = pcD - 0.500 * atrD
+float U50 = pcD + 0.500 * atrD
+float L61 = pcD - 0.618 * atrD
+float U61 = pcD + 0.618 * atrD
+float L78 = pcD - 0.786 * atrD
+float U78 = pcD + 0.786 * atrD
+float L100 = pcD - 1.000 * atrD
+float U100 = pcD + 1.000 * atrD
+float L123 = pcD - 1.236 * atrD
+float U123 = pcD + 1.236 * atrD
+float L138 = pcD - 1.382 * atrD
+float U138 = pcD + 1.382 * atrD
+float L161 = pcD - 1.618 * atrD
+float U161 = pcD + 1.618 * atrD
+float L200 = pcD - 2.000 * atrD
+float U200 = pcD + 2.000 * atrD
+
+// ---------------- 时段 ----------------
+bool inUserSession = not na(time(timeframe.period, sigSession, "America/New_York"))
+bool inPre = not na(time(timeframe.period, "0800-0930", "America/New_York"))
+bool signalWindow = inUserSession or (includePre and inPre)
+bool is10m = timeframe.isintraday and timeframe.period == "10"
+bool canSignal = barstate.isconfirmed and is10m and signalWindow
+
+int hhmmET = hour(time, "America/New_York") * 100 + minute(time, "America/New_York")
+bool newDayET = ta.change(dayofmonth(time, "America/New_York")) != 0
+// 所有状态机共用：只在 RTH 推进，避免行为随 feed(含/不含盘外)漂移。
+bool inRth = hhmmET >= 930 and hhmmET < 1600
+
+// ---------------- 通用 ----------------
+// 日界标记：不能用 hhmmET == 930 判等——那根 bar 缺失(断档/延迟开盘)时所有重置都不发生，
+// 会把昨天的状态、配额、累计量带进今天。改成"今天第一根 RTH bar"。
+var int rthDayStamp = na
+bool newRthDay = false
+if barstate.isconfirmed and is10m and inRth
+    int dNow_ = dayofmonth(time, "America/New_York")
+    if na(rthDayStamp) or rthDayStamp != dNow_
+        newRthDay := true
+        rthDayStamp := dNow_
+
+var string lastSignalText = "—"
+var int todayCount = 0
+if barstate.isconfirmed and newDayET
+    todayCount := 0
+
+// 最近一次方向性信号的存活状态（用于"现在做"指引；不追踪你是否真的进场）
+var int lastSigDir = 0
+var float lastSigStop = na
+var int lastSigBar = na
+var bool lastSigLive = false
+if barstate.isconfirmed and lastSigLive
+    bool sigStopped = lastSigDir == 1 ? close < lastSigStop : close > lastSigStop
+    // 日界强制清零：否则 RTH-only feed 上会把"持有|守X"挂到次日开盘。
+    if sigStopped or bar_index - lastSigBar > 24 or newRthDay
+        lastSigLive := false
+
+// 每个模块独立通道：共享通道会让同 bar 双信号时 alert 显示别人的止损价。
+var float tEntryP = na
+var float tStopP = na
+var float tRefP = na
+var float oEntryP = na
+var float oStopP = na
+var float lEntryP = na
+var float lStopP = na
+
+// 不给仓位建议：26 天数据无法可靠区分"宽止损/窄止损"哪个更好，
+// 两次独立计算方向相反。只报风险点数，按你的固定金额风险自行换算手数。
+f_note(float stop_) =>
+    "止损参考 " + str.tostring(stop_, format.mintick) + "｜风险 " + str.tostring(math.abs(close - stop_), "#.#") + " 点"
+
+// ---------------- 1) 回踩-收回 买卖点 ----------------
+var int tState = 0
+var int tDir = 0
+var float tExcRef = na
+var float tExc = na
+var float tTouchLo = na
+var int tAge = 0
+bool trendLongSig = false
+bool trendShortSig = false
+float trendStop = na
+
+// 状态机只在 RTH 推进：盘外 bar 会让状态漂移，且行为随 feed(ETH/RTH-only)变化。
+if barstate.isconfirmed and is10m and inRth
+    // 日界清零：跨夜的"已离云/回踩中"会用昨天的 tTouchLo 当今早的止损，
+    // 而隔夜的插针根本没算进去；这类跨日事件也不在 n=979 的验证集里。
+    if newRthDay
+        tState := 0
+        tDir := 0
+    if tDir == 1 and not slowUp
+        tState := 0
+        tDir := 0
+    if tDir == -1 and not slowDn
+        tState := 0
+        tDir := 0
+    if tState == 0
+        if slowUp and low > cloudU
+            tState := 1
+            tDir := 1
+            tExcRef := cloudU
+            tExc := high
+        else if slowDn and high < cloudL and useShort
+            tState := 1
+            tDir := -1
+            tExcRef := cloudL
+            tExc := low
+    else if tState == 1
+        tExc := tDir == 1 ? math.max(tExc, high) : math.min(tExc, low)
+        bool farEnough = tDir == 1 ? tExc - tExcRef >= departMinAtr * atrD : tExcRef - tExc >= departMinAtr * atrD
+        bool touched = tDir == 1 ? low <= cloudU : high >= cloudL
+        if touched
+            if farEnough
+                tState := 2
+                tTouchLo := tDir == 1 ? low : high
+                tAge := 0
+            else
+                tState := 0
+                tDir := 0
+    else if tState == 2
+        tAge += 1
+        tTouchLo := tDir == 1 ? math.min(tTouchLo, low) : math.max(tTouchLo, high)
+        bool reclaim = tDir == 1 ? close > cloudU and close > open : close < cloudL and close < open
+        if reclaim
+            float stopBuf = math.max(syminfo.mintick * 2, 0.002 * atrD)
+            trendStop := tDir == 1 ? tTouchLo - stopBuf : tTouchLo + stopBuf
+            if canSignal and useTrend
+                trendLongSig := tDir == 1
+                trendShortSig := tDir == -1
+            tState := 0
+            tDir := 0
+        else if tAge >= reclaimBars
+            tState := 0
+            tDir := 0
+
+// ---------------- 2) 开盘下杀-快速收复 ----------------
+var float o930 = na
+var float openHi = na
+var float openLo = na
+var bool openDipped = false
+var bool openPopped = false
+var bool openFired = false
+bool openRevSig = false
+bool openRevShortSig = false
+float openStop = na
+
+if barstate.isconfirmed and is10m
+    if newRthDay
+        o930 := na
+        openHi := na
+        openLo := na
+        openDipped := false
+        openPopped := false
+        openFired := false
+    if hhmmET >= 920 and hhmmET <= openEndHHMM
+        openHi := na(openHi) ? high : math.max(openHi, high)
+        openLo := na(openLo) ? low : math.min(openLo, low)
+        if hhmmET == 930
+            o930 := open
+        // 必须真的跌破 09:30 开盘价才算"下杀"，再要求收复。
+        if not na(o930) and low < o930
+            openDipped := true
+        if not na(o930) and high > o930
+            openPopped := true
+        // 深度必须相对开盘价衡量（回测口径），不是窗口总振幅。
+        bool dipDeep = not na(openLo) and not na(o930) and o930 - openLo >= openDipAtr * atrD
+        bool popDeep = not na(openHi) and not na(o930) and openHi - o930 >= openDipAtr * atrD
+        if not openFired and hhmmET >= 930 and not na(o930)
+            if useOpen and dipDeep and openDipped and close > o930 and close > open
+                openStop := openLo - math.max(syminfo.mintick * 2, 0.002 * atrD)
+                if canSignal
+                    openRevSig := true
+                openFired := true
+            else if useOpenS and useShort and popDeep and openPopped and close < o930 and close < open
+                openStop := openHi + math.max(syminfo.mintick * 2, 0.002 * atrD)
+                if canSignal
+                    openRevShortSig := true
+                openFired := true
+
+// ---------------- 3) 关键位反应 ----------------
+var bool lvlArmedL = true
+var bool lvlArmedU = true
+var int lvlCountL = 0
+var int lvlCountU = 0
+var int lvlPend = 0
+var int lvlAge = 0
+var float lvlEpLo = na
+var float lvlEpHi = na
+bool lvlBounceSig = false
+bool lvlRejectSig = false
+float lvlStop = na
+
+if barstate.isconfirmed and is10m and inRth
+    if newRthDay
+        lvlArmedL := true
+        lvlArmedU := true
+        lvlCountL := 0
+        lvlCountU := 0
+        lvlPend := 0
+    if not lvlArmedL and lvlPend == 0 and low > LT + rearmAtr * atrD and lvlCountL < 2
+        lvlArmedL := true
+    if not lvlArmedU and lvlPend == 0 and high < UT - rearmAtr * atrD and lvlCountU < 2
+        lvlArmedU := true
+    if lvlPend == 0
+        if lvlArmedL and low <= LT
+            lvlPend := 1
+            lvlAge := 0
+            lvlEpLo := low
+            lvlEpHi := high
+            lvlArmedL := false
+            lvlCountL += 1
+        else if lvlArmedU and high >= UT and useShort
+            lvlPend := -1
+            lvlAge := 0
+            lvlEpLo := low
+            lvlEpHi := high
+            lvlArmedU := false
+            lvlCountU += 1
+    if lvlPend != 0
+        lvlAge += 1
+        lvlEpLo := math.min(lvlEpLo, low)
+        lvlEpHi := math.max(lvlEpHi, high)
+        bool react = lvlPend == 1 ? close > LT : close < UT
+        bool broken = lvlPend == 1 ? close < LT - 0.10 * atrD : close > UT + 0.10 * atrD
+        if react and lvlAge <= 3
+            lvlStop := lvlPend == 1 ? lvlEpLo - math.max(syminfo.mintick * 2, 0.002 * atrD) : lvlEpHi + math.max(syminfo.mintick * 2, 0.002 * atrD)
+            if canSignal and useLevel
+                lvlBounceSig := lvlPend == 1
+                lvlRejectSig := lvlPend == -1
+            lvlPend := 0
+        else if broken or lvlAge > 3
+            lvlPend := 0
+
+// ---------------- 4) RSI 背离（参数=2年回测胜出变体，见文件头）----------------
+// 顶背离: pivot(2,2) 不要求云外, RSI差>=3 → 只当"封顶警告"用
+// 底背离: pivot(3,3) 要求跌出云下>=0.15ATR, RSI差>=1 → 弱做多倾向
+float ph = ta.pivothigh(high, 2, 2)
+float pl = ta.pivotlow(low, 3, 3)
+var float lastPhPrice = na
+var float lastPhRsi = na
+var int lastPhBar = na
+var float lastPlPrice = na
+var float lastPlRsi = na
+var int lastPlBar = na
+bool bearDivSig = false
+bool bullDivSig = false
+
+if barstate.isconfirmed and is10m and not na(ph)
+    float phRsi = rsi14[2]
+    if not na(lastPhPrice) and ph > lastPhPrice and phRsi < lastPhRsi - divMinRsiTop and bar_index - lastPhBar <= 30
+        if canSignal and useDiv
+            bearDivSig := true
+    lastPhPrice := ph
+    lastPhRsi := phRsi
+    lastPhBar := bar_index
+
+if barstate.isconfirmed and is10m and not na(pl)
+    float plRsi = rsi14[3]
+    if not na(lastPlPrice) and pl < lastPlPrice and plRsi > lastPlRsi + divMinRsiBot and bar_index - lastPlBar <= 30 and cloudL - pl > 0.15 * atrD
+        if canSignal and useDiv
+            bullDivSig := true
+    lastPlPrice := pl
+    lastPlRsi := plRsi
+    lastPlBar := bar_index
+
+// 警示状态（供状态卡常驻显示——图上的标签会滚走，但"别追高"这件事得留住）
+var int cautionBar = na
+var int cautionKind = 0     // 1=顶背离(勿追多) 2=底背离(结构事件) 3=极端超买
+var string cautionTime = ""
+if barstate.isconfirmed and is10m
+    if bearDivSig
+        cautionBar := bar_index
+        cautionKind := 1
+        cautionTime := str.format_time(time, "HH:mm", "America/New_York")
+    else if bullDivSig
+        cautionBar := bar_index
+        cautionKind := 2
+        cautionTime := str.format_time(time, "HH:mm", "America/New_York")
+    else if inRth and rsi14 >= 85 and (na(cautionBar) or bar_index - cautionBar > 6)
+        cautionBar := bar_index
+        cautionKind := 3
+        cautionTime := str.format_time(time, "HH:mm", "America/New_York")
+
+// ---------------- 5) 夜盘风险评分（唯一样本外验证过的模块）----------------
+// 6 个特征全部在 15:50 收盘时已知，无前视。权重 = 495 天拟合的 t 值，
+// 已用滚动 walk-forward 验证（1.91× 提升）。只预测幅度，不预测方向。
+var float dayHi = na
+var float dayLo = na
+var float dayOpen = na
+var float dayVol = na
+var float riskScore = na
+var int riskSettledDay = na
+bool riskWarnSig = false
+
+// 当日 RTH 累计。复位条件必须是"当日第一根 RTH bar"（09:30），
+// 不能用 newDayET（它只在午夜 bar 为真，而午夜 bar 不在 RTH 内——
+// v2.0 因此从不复位，导致每天误报"风险偏高"，已修）。
+if barstate.isconfirmed and is10m and inRth
+    if newRthDay or na(dayOpen)
+        dayOpen := open
+        dayHi := high
+        dayLo := low
+        dayVol := nz(volume)
+    else
+        dayHi := math.max(nz(dayHi, high), high)
+        dayLo := math.min(nz(dayLo, low), low)
+        dayVol := nz(dayVol) + nz(volume)
+
+// 基线：近 90 个完整交易日的成交量均值 + 近 5 日 ATR 均值，
+// 每天 15:50 结算时先取"不含今天"的历史，再把今天入库。
+var float volBaseLive = na
+var array<float> volHist = array.new_float(0)
+var array<float> atrHist = array.new_float(0)
+
+// 结算：15:50 那根 RTH bar，每天只结算一次。
+// 半日市（13:00 收盘，一年约 5 天）没有 15:50 bar → 当晚不结算、不发警报。
+// 这是刻意选择的失败方式：漏一次提醒，好过给一个错的。
+int etDay = dayofmonth(time, "America/New_York")
+bool isLastRthBar = inRth and hhmmET >= 1550 and (na(riskSettledDay) or riskSettledDay != etDay)
+if barstate.isconfirmed and is10m and useRisk and isLastRthBar and not na(atrD) and not na(dayHi) and not na(dayOpen)
+    float rng = dayHi - dayLo
+    float volBase = array.size(volHist) >= 20 ? array.avg(volHist) : na
+    float atrBase = array.size(atrHist) >= 5 ? array.avg(array.slice(atrHist, math.max(0, array.size(atrHist) - 5), array.size(atrHist))) : na
+    if rng > 0 and atrD > 0 and not na(atrBase)
+        float zRange = (rng / atrD - 0.90) / 0.35
+        float zClosePos = ((close - dayLo) / rng - 0.56) / 0.26
+        float zNet = ((close - dayOpen) / atrD - 0.00) / 0.55
+        float zLastHr = (math.abs(close - open[6]) / atrD - 0.16) / 0.16
+        // 无成交量数据的品种（部分指数）zVol 置中性，避免整体分数被系统性拉低
+        bool volUsable = not na(volBase) and volBase > 0 and nz(dayVol) > 0
+        volBaseLive := volUsable ? volBase : na
+        float zVol = volUsable ? (nz(dayVol) / math.max(volBase, 1) - 1.10) / 0.40 : 0.0
+        float zAtrTrend = (atrD / math.max(atrBase, 0.01) - 1.00) / 0.06
+        riskScore := 3.61 * zRange - 2.58 * zClosePos - 2.71 * zNet + 2.40 * zLastHr + 2.33 * zVol + 2.11 * zAtrTrend
+        if riskScore >= riskThr
+            riskWarnSig := true
+    riskSettledDay := etDay
+    // 今天入库（放在计算之后，绝不让今天污染自己的基线）
+    array.push(volHist, nz(dayVol))
+    array.push(atrHist, atrD)
+    if array.size(volHist) > 90
+        array.shift(volHist)
+    if array.size(atrHist) > 90
+        array.shift(atrHist)
+    // 为下一日清空累计器
+    dayOpen := na
+    dayHi := na
+    dayLo := na
+    dayVol := na
+
+// ---------------- 5) 夜盘异动哨兵 ----------------
+// 16:00→次日09:30，较昨日16:00收盘偏移 ≥nightThr×日ATR 时各方向每晚一次。
+// 68 晚回测：0.7 阈值 ≈3.6 次/月，8 次 ≥1% 的夜盘下杀全部命中。
+var float nightRef = na
+var bool nightFiredUp = false
+var bool nightFiredDn = false
+var bool wasNight = false
+bool nightDownSig = false
+bool nightUpSig = false
+bool inNight = hhmmET >= 1600 or hhmmET < 930
+
+if barstate.isconfirmed and is10m
+    // 参考价 = RTH 最后一根收盘。逐根跟踪而不是只认 15:50 那根，
+    // 这样假日/断档/换 feed 时不会用到过期参考价或卡住配额。
+    if not inNight
+        nightRef := close
+    // 重置条件必须包含"长断档后重开"：否则周五 16:00 进入夜间后 wasNight 一直为 true，
+    // 周日 18:00 重开时不重置 → 周五傍晚用掉的配额会吃掉整个周日→周一夜盘的警报。
+    bool nightGapResume = inNight and wasNight and not na(time[1]) and time - time[1] > 3 * 3600000
+    if (inNight and not wasNight) or nightGapResume
+        nightFiredUp := false
+        nightFiredDn := false
+    wasNight := inNight
+    if useNight and inNight and not na(nightRef) and not na(atrD)
+        float nightDiff = close - nightRef
+        if not nightFiredDn and nightDiff <= -nightThr * atrD
+            nightDownSig := true
+            nightFiredDn := true
+        if not nightFiredUp and nightDiff >= nightThr * atrD
+            nightUpSig := true
+            nightFiredUp := true
+
+// ---------------- 信号标签 ----------------
+if trendLongSig
+    label.new(bar_index, low, "回踩收回 ▲｜非买入建议\n" + f_note(trendStop), style=label.style_label_up, color=color.new(color.green, 10), textcolor=color.white, size=size.normal)
+    lastSignalText := "回踩买点 " + str.format_time(time, "HH:mm", "America/New_York")
+    todayCount += 1
+    tEntryP := close
+    tStopP := trendStop
+    tRefP := tExc
+    lastSigDir := 1
+    lastSigStop := trendStop
+    lastSigBar := bar_index
+    lastSigLive := true
+if trendShortSig
+    label.new(bar_index, high, "回踩收回 ▼｜非卖出建议\n" + f_note(trendStop), style=label.style_label_down, color=color.new(color.red, 10), textcolor=color.white, size=size.normal)
+    lastSignalText := "回踩卖点 " + str.format_time(time, "HH:mm", "America/New_York")
+    todayCount += 1
+    tEntryP := close
+    tStopP := trendStop
+    tRefP := tExc
+    lastSigDir := -1
+    lastSigStop := trendStop
+    lastSigBar := bar_index
+    lastSigLive := true
+if openRevSig
+    label.new(bar_index, low, "开盘下杀收复 ▲｜非买入建议\n" + f_note(openStop), style=label.style_label_up, color=color.new(color.teal, 0), textcolor=color.white, size=size.large)
+    lastSignalText := "开盘反转 " + str.format_time(time, "HH:mm", "America/New_York")
+    todayCount += 1
+    oEntryP := close
+    oStopP := openStop
+    lastSigDir := 1
+    lastSigStop := openStop
+    lastSigBar := bar_index
+    lastSigLive := true
+if openRevShortSig
+    label.new(bar_index, high, "开盘冲高回落 ▼\n" + f_note(openStop), style=label.style_label_down, color=color.new(color.orange, 0), textcolor=color.white, size=size.large)
+    lastSignalText := "开盘回落 " + str.format_time(time, "HH:mm", "America/New_York")
+    todayCount += 1
+    oEntryP := close
+    oStopP := openStop
+    lastSigDir := -1
+    lastSigStop := openStop
+    lastSigBar := bar_index
+    lastSigLive := true
+if lvlBounceSig
+    label.new(bar_index, low, "下触发位反弹 ▲\n" + f_note(lvlStop), style=label.style_label_up, color=color.new(color.blue, 0), textcolor=color.white, size=size.normal)
+    lastSignalText := "位反弹 " + str.format_time(time, "HH:mm", "America/New_York")
+    todayCount += 1
+    lEntryP := close
+    lStopP := lvlStop
+    lastSigDir := 1
+    lastSigStop := lvlStop
+    lastSigBar := bar_index
+    lastSigLive := true
+if lvlRejectSig
+    label.new(bar_index, high, "上触发位受阻 ▼\n" + f_note(lvlStop), style=label.style_label_down, color=color.new(color.purple, 0), textcolor=color.white, size=size.normal)
+    lastSignalText := "位受阻 " + str.format_time(time, "HH:mm", "America/New_York")
+    todayCount += 1
+    lEntryP := close
+    lStopP := lvlStop
+    lastSigDir := -1
+    lastSigStop := lvlStop
+    lastSigBar := bar_index
+    lastSigLive := true
+if riskWarnSig
+    label.new(bar_index, high, "⚠ 今晚风险偏高（评分 " + str.tostring(riskScore, "#.#") + "）\n同类夜异动率是平常夜的约 2 倍（收盘口径 32% vs 15%）｜考虑减隔夜仓", style=label.style_label_down, color=color.new(color.orange, 0), textcolor=color.white, size=size.normal)
+    lastSignalText := "夜盘风险高 " + str.format_time(time, "HH:mm", "America/New_York")
+if nightDownSig
+    label.new(bar_index, low, "🌙 夜盘下杀 ▼ 距昨收 " + str.tostring(close - nightRef, "#.#") + " 点", style=label.style_label_up, color=color.new(color.red, 0), textcolor=color.white, size=size.large)
+    lastSignalText := "夜盘下杀 " + str.format_time(time, "HH:mm", "America/New_York")
+if nightUpSig
+    label.new(bar_index, high, "🌙 夜盘上冲 ▲ 距昨收 +" + str.tostring(close - nightRef, "#.#") + " 点", style=label.style_label_down, color=color.new(color.teal, 0), textcolor=color.white, size=size.large)
+    lastSignalText := "夜盘上冲 " + str.format_time(time, "HH:mm", "America/New_York")
+if bearDivSig
+    label.new(bar_index, high, "⚠ 已确认高点+背离｜勿追多·别加仓\n任何确认高点后~70%两小时不创新高·背离本身无显著加成·做空无优势", style=label.style_label_down, color=color.new(color.yellow, 0), textcolor=color.black, size=size.normal)
+    lastSignalText := "顶背离 " + str.format_time(time, "HH:mm", "America/New_York")
+    todayCount += 1
+if bullDivSig
+    label.new(bar_index, low, "底背离 ▲｜结构事件·非买点\n61%两小时后价更高 vs 同时段基线54%·未过显著性检验", style=label.style_label_up, color=color.new(color.yellow, 0), textcolor=color.black, size=size.normal)
+    lastSignalText := "底背离 " + str.format_time(time, "HH:mm", "America/New_York")
+    todayCount += 1
+
+// ---------------- 绘制 ----------------
+plot(e5, "EMA5", color=color.new(color.green, 40), linewidth=1)
+plot(e12, "EMA12", color=color.new(color.red, 40), linewidth=1)
+plot(e21, "EMA21", color=color.new(color.aqua, 70), linewidth=1)
+plot(e48, "EMA48", color=color.new(color.blue, 60), linewidth=1)
+pCU = plot(cloudU, "云上沿", display=display.none)
+pCL = plot(cloudL, "云下沿", display=display.none)
+fill(pCU, pCL, color=slowUp ? color.new(color.green, 88) : slowDn ? color.new(color.red, 88) : color.new(color.gray, 92))
+
+// 换日阶梯整体跳变：断开一根，免得画出竖直连线墙
+bool lvBrk = na(pcD[1]) or na(pcD) ? false : pcD != pcD[1]
+// v2.6 纵轴压缩修复：以下 21 条阶梯 plot 全部改 display=display.none——
+// 声明一条不删、顺序一字不动（display 是 const 渲染参数，不改变通道号），
+// 但不再参与纵轴自动缩放；可见的阶梯改在文件末尾追加区用 line.new 重画。
+plot(showLevels and not lvBrk ? pcD : na, "昨收", color=color.new(color.gray, 20), style=plot.style_linebr, linewidth=2, display=display.none)
+plot(showLevels and not lvBrk ? LT : na, "下触发位", color=color.new(color.yellow, 10), style=plot.style_linebr, linewidth=2, display=display.none)
+plot(showLevels and not lvBrk ? UT : na, "上触发位", color=color.new(color.yellow, 10), style=plot.style_linebr, linewidth=2, display=display.none)
+plot(showLevels and showExt and not lvBrk ? L38 : na, "-38.2%", color=color.new(color.silver, 55), style=plot.style_linebr, linewidth=1, display=display.none)
+plot(showLevels and showExt and not lvBrk ? U38 : na, "+38.2%", color=color.new(color.silver, 55), style=plot.style_linebr, linewidth=1, display=display.none)
+plot(showLevels and showExt and not lvBrk ? L50 : na, "-50%", color=color.new(color.silver, 70), style=plot.style_linebr, linewidth=1, display=display.none)
+plot(showLevels and showExt and not lvBrk ? U50 : na, "+50%", color=color.new(color.silver, 70), style=plot.style_linebr, linewidth=1, display=display.none)
+plot(showLevels and showExt and not lvBrk ? L61 : na, "-61.8%", color=color.new(color.silver, 55), style=plot.style_linebr, linewidth=1, display=display.none)
+plot(showLevels and showExt and not lvBrk ? U61 : na, "+61.8%", color=color.new(color.silver, 55), style=plot.style_linebr, linewidth=1, display=display.none)
+plot(showLevels and showExt and not lvBrk ? L78 : na, "-78.6%", color=color.new(color.silver, 70), style=plot.style_linebr, linewidth=1, display=display.none)
+plot(showLevels and showExt and not lvBrk ? U78 : na, "+78.6%", color=color.new(color.silver, 70), style=plot.style_linebr, linewidth=1, display=display.none)
+plot(showLevels and showExt and not lvBrk ? L100 : na, "-100%（日ATR满幅）", color=color.new(color.orange, 35), style=plot.style_linebr, linewidth=2, display=display.none)
+plot(showLevels and showExt and not lvBrk ? U100 : na, "+100%（日ATR满幅）", color=color.new(color.orange, 35), style=plot.style_linebr, linewidth=2, display=display.none)
+plot(showLevels and showExt and not lvBrk ? L123 : na, "-123.6%", color=color.new(color.silver, 75), style=plot.style_linebr, linewidth=1, display=display.none)
+plot(showLevels and showExt and not lvBrk ? U123 : na, "+123.6%", color=color.new(color.silver, 75), style=plot.style_linebr, linewidth=1, display=display.none)
+plot(showLevels and showExt and not lvBrk ? L138 : na, "-138.2%", color=color.new(color.silver, 75), style=plot.style_linebr, linewidth=1, display=display.none)
+plot(showLevels and showExt and not lvBrk ? U138 : na, "+138.2%", color=color.new(color.silver, 75), style=plot.style_linebr, linewidth=1, display=display.none)
+plot(showLevels and showExt and not lvBrk ? L161 : na, "-161.8%", color=color.new(color.silver, 80), style=plot.style_linebr, linewidth=1, display=display.none)
+plot(showLevels and showExt and not lvBrk ? U161 : na, "+161.8%", color=color.new(color.silver, 80), style=plot.style_linebr, linewidth=1, display=display.none)
+plot(showLevels and showExt and not lvBrk ? L200 : na, "-200%（极端）", color=color.new(color.red, 60), style=plot.style_linebr, linewidth=1, display=display.none)
+plot(showLevels and showExt and not lvBrk ? U200 : na, "+200%（极端）", color=color.new(color.red, 60), style=plot.style_linebr, linewidth=1, display=display.none)
+
+bgcolor(is10m and tState == 1 ? (tDir == 1 ? color.new(color.green, 95) : color.new(color.red, 95)) : na, title="已离云｜等回踩")
+
+plot(math.round_to_mintick(tEntryP), "T_ENTRY", display=display.none)
+plot(math.round_to_mintick(tStopP), "T_STOP", display=display.none)
+plot(math.round_to_mintick(tRefP), "T_REF", display=display.none)
+plot(math.round_to_mintick(oEntryP), "O_ENTRY", display=display.none)
+plot(math.round_to_mintick(oStopP), "O_STOP", display=display.none)
+plot(math.round_to_mintick(lEntryP), "L_ENTRY", display=display.none)
+plot(math.round_to_mintick(lStopP), "L_STOP", display=display.none)
+
+// ---------------- ATR 位价签（右侧，说明每条线是什么）----------------
+var label[] lvlTags = array.new_label(0)
+f_tag(float p, string txt, color c) =>
+    if not na(p)
+        array.push(lvlTags, label.new(bar_index + 3, p, txt, style=label.style_label_left, color=color.new(color.black, 100), textcolor=c, size=size.small))
+
+if barstate.islast and showLevels and showLvlTags
+    if array.size(lvlTags) > 0
+        for i = 0 to array.size(lvlTags) - 1
+            label.delete(array.get(lvlTags, i))
+        array.clear(lvlTags)
+    f_tag(pcD, "昨收 " + str.tostring(pcD, format.mintick) + "（今日多空分界）", color.new(color.gray, 0))
+    f_tag(UT, "上触发 " + str.tostring(UT, format.mintick) + "｜站上=当日偏多", color.new(color.yellow, 0))
+    f_tag(LT, "下触发 " + str.tostring(LT, format.mintick) + "｜跌破=当日偏空", color.new(color.yellow, 0))
+    if showExt
+        f_tag(U100, "+100% " + str.tostring(U100, format.mintick) + "｜日ATR满幅·常见止盈", color.new(color.orange, 0))
+        f_tag(L100, "-100% " + str.tostring(L100, format.mintick) + "｜日ATR满幅·常见止盈", color.new(color.orange, 0))
+        f_tag(U61, "+61.8% " + str.tostring(U61, format.mintick), color.new(color.silver, 20))
+        f_tag(L61, "-61.8% " + str.tostring(L61, format.mintick), color.new(color.silver, 20))
+        f_tag(U161, "+161.8% " + str.tostring(U161, format.mintick) + "｜超买区", color.new(color.silver, 40))
+        f_tag(L161, "-161.8% " + str.tostring(L161, format.mintick) + "｜超卖区", color.new(color.silver, 40))
+
+// ---------------- 今日节奏（显示用分类，不发信号）----------------
+var float dayRunHi = na
+var float dayRunLo = na
+var float dayMaxDD = na
+var float dayMaxUU = na
+var int rthBars = 0
+var int aboveCloudBars = 0
+if barstate.isconfirmed and is10m and inRth
+    if newRthDay or na(dayRunHi)
+        dayRunHi := high
+        dayRunLo := low
+        dayMaxDD := 0.0
+        dayMaxUU := 0.0
+        rthBars := 0
+        aboveCloudBars := 0
+    else
+        dayRunHi := math.max(dayRunHi, high)
+        dayRunLo := math.min(dayRunLo, low)
+    dayMaxDD := math.max(dayMaxDD, dayRunHi - low)
+    dayMaxUU := math.max(dayMaxUU, high - dayRunLo)
+    rthBars += 1
+    if close > cloudU
+        aboveCloudBars += 1
+
+// ---------------- 状态卡 ----------------
+var table card = table.new(position.top_right, 2, 10, bgcolor=color.new(color.black, 20), frame_color=color.new(color.white, 60), frame_width=1)
+if barstate.islast
+    if showCard
+        string trendTxt = slowUp ? "多头" : slowDn ? "空头" : "中性"
+        string posTxt = close > cloudU ? "云上" : close < cloudL ? "云下" : "云内"
+        string stTxt = not is10m ? "请切到 10 分钟图" : tState == 1 ? (tDir == 1 ? "已离云｜等回踩买点" : "已离云｜等回踩卖点") : tState == 2 ? "回踩中｜等收回确认" : lvlPend == 1 ? "触下位｜等反弹确认" : lvlPend == -1 ? "触上位｜等受阻确认" : "观察中"
+        // 今日 ATR 已用幅度：Saty 方法判断"还有没有空间"的核心刻度
+        float dayUsed = na(dayRunHi) or na(dayRunLo) ? na : dayRunHi - dayRunLo
+        string atrUsedTxt = na(dayUsed) or na(atrD) or atrD <= 0 ? "—" : str.tostring(dayUsed / atrD, "0.00") + "×日ATR（" + str.tostring(dayUsed, "#") + " 点）" + (dayUsed >= atrD ? "｜已走满日幅·追高性价比低" : dayUsed >= 0.7 * atrD ? "｜已走七成" : "")
+        string stopGap = str.tostring(math.abs(close - lastSigStop), "#.#")
+        string nowTxt = lastSigLive ? (lastSigDir == 1 ? "若已按买点进场：持有｜守 " + str.tostring(lastSigStop, format.mintick) + "（现距 " + stopGap + " 点）" : "若已按卖点进场：持有｜守 " + str.tostring(lastSigStop, format.mintick) + "（现距 " + stopGap + " 点）") : tState == 1 ? (tDir == 1 ? "勿追高｜等回踩买点" : "勿追空｜等反抽卖点") : tState == 2 ? "回踩中｜盯收回确认" : lvlPend != 0 ? "触位观察｜等确认" : slowUp ? "多头背景｜无信号先不动" : slowDn ? "空头背景｜无信号先不动" : "中性｜观望"
+        table.cell(card, 0, 0, "Fable Signal", text_color=color.new(color.aqua, 0), text_halign=text.align_left)
+        table.cell(card, 1, 0, trendTxt + "｜" + posTxt + "｜今日 " + str.tostring(todayCount) + " 信号", text_color=color.white)
+        table.cell(card, 0, 1, "现在做", text_color=color.new(color.gray, 20), text_halign=text.align_left)
+        table.cell(card, 1, 1, nowTxt, text_color=lastSigLive ? color.new(color.lime, 0) : color.white)
+        table.cell(card, 0, 2, "状态", text_color=color.new(color.gray, 20), text_halign=text.align_left)
+        table.cell(card, 1, 2, stTxt, text_color=color.white)
+        table.cell(card, 0, 3, "ATR已用", text_color=color.new(color.gray, 20), text_halign=text.align_left)
+        table.cell(card, 1, 3, atrUsedTxt, text_color=not na(dayUsed) and not na(atrD) and dayUsed >= atrD ? color.new(color.orange, 10) : color.new(color.gray, 25))
+        int cautionAge = na(cautionBar) ? 9999 : bar_index - cautionBar
+        string cautionTxt = cautionKind == 1 and cautionAge <= 12 ? "顶背离 " + cautionTime + "（" + str.tostring(cautionAge, "#") + "根前）｜勿追多·勿加仓" : cautionKind == 2 and cautionAge <= 12 ? "底背离 " + cautionTime + "（" + str.tostring(cautionAge, "#") + "根前）｜结构事件·非买点" : cautionKind == 3 and cautionAge <= 6 ? "极端超买 " + cautionTime + "｜勿追·也勿做空" : "—｜最近信号 " + lastSignalText
+        table.cell(card, 0, 4, "警示", text_color=color.new(color.gray, 20), text_halign=text.align_left)
+        table.cell(card, 1, 4, cautionTxt, text_color=cautionAge <= 12 and cautionKind > 0 ? color.new(color.yellow, 0) : color.new(color.gray, 30))
+        table.cell(card, 0, 5, "今日节奏", text_color=color.new(color.gray, 20), text_halign=text.align_left)
+        // 本 feed 无成交量时 zVol 被置零 = 实际只跑 5/6 特征，档位未在本品种复验，卡上要说清楚
+        string featTxt = na(volBaseLive) or volBaseLive <= 0 ? "（5/6特征·本品种无量）" : ""
+        string riskTxt = na(riskScore) ? "—（15:50 结算）" : (na(riskSettledDay) or riskSettledDay != etDay) ? "今日未结算（上次 " + str.tostring(riskScore, "#.#") + "）" : riskScore >= riskThr ? "偏高 " + str.tostring(riskScore, "#.#") + featTxt + "｜同类夜异动≈平常2倍·考虑减隔夜仓" : "正常 " + str.tostring(riskScore, "#.#") + featTxt
+        // 下一个上方/下方 ATR 位（自动挑最近的一条）
+        array<float> lvPrices = array.from(LT, UT, pcD, U38, L38, U50, L50, U61, L61, U78, L78, U100, L100, U123, L123, U138, L138, U161, L161, U200, L200)
+        array<string> lvNames = array.from("下触发", "上触发", "昨收", "+38.2%", "-38.2%", "+50%", "-50%", "+61.8%", "-61.8%", "+78.6%", "-78.6%", "+100%", "-100%", "+123.6%", "-123.6%", "+138.2%", "-138.2%", "+161.8%", "-161.8%", "+200%", "-200%")
+        float nxtUp = na
+        string nxtUpName = ""
+        float nxtDn = na
+        string nxtDnName = ""
+        int lvMax = showExt ? array.size(lvPrices) - 1 : 2
+        for li = 0 to lvMax
+            float lp = array.get(lvPrices, li)
+            if not na(lp)
+                if lp > close and (na(nxtUp) or lp < nxtUp)
+                    nxtUp := lp
+                    nxtUpName := array.get(lvNames, li)
+                if lp < close and (na(nxtDn) or lp > nxtDn)
+                    nxtDn := lp
+                    nxtDnName := array.get(lvNames, li)
+        string nxtTxt = (na(nxtDn) ? "—" : nxtDnName + " " + str.tostring(nxtDn, format.mintick) + "(-" + str.tostring(close - nxtDn, "#") + ")") + "  ↕  " + (na(nxtUp) ? "—" : nxtUpName + " " + str.tostring(nxtUp, format.mintick) + "(+" + str.tostring(nxtUp - close, "#") + ")")
+        // 接下来看什么：把状态机的下一个转移条件讲成人话（背离条件用实际追踪的 pivot 数字）
+        string bearNeed = not na(lastPhPrice) and bar_index - lastPhBar <= 30 ? "顶背离警告需:高过 " + str.tostring(lastPhPrice, format.mintick) + " 且RSI<" + str.tostring(lastPhRsi - divMinRsiTop, "#.#") : "等新的确认高点形成"
+        string bullNeed = not na(lastPlPrice) and bar_index - lastPlBar <= 30 ? "底背离需:跌破 " + str.tostring(lastPlPrice, format.mintick) + " 且RSI>" + str.tostring(lastPlRsi + divMinRsiBot, "#.#") + "(且在云下)" : "等新的确认低点形成"
+        string watchTxt = tState == 1 and tDir == 1 ? "价格回落触到 5/12 云 → 然后等一根阳线收在云上方" : tState == 1 and tDir == -1 ? "价格反抽触到 5/12 云 → 然后等一根阴线收在云下方" : tState == 2 and tDir == 1 ? "已触云｜" + str.tostring(reclaimBars - tAge, "#0") + " 根内需收在云上方才算数" : tState == 2 and tDir == -1 ? "已触云｜" + str.tostring(reclaimBars - tAge, "#0") + " 根内需收在云下方才算数" : lvlPend == 1 ? "已触下触发位｜3 根内收回其上=反弹信号，否则作废" : lvlPend == -1 ? "已触上触发位｜3 根内收回其下=受阻信号，否则作废" : close > UT ? "站上触发位之上｜" + bearNeed : close < LT ? "跌破下触发位｜" + bullNeed : "在触发位区间内｜方向未定，等站上/跌破"
+        // RSI 行：数值 + 按 2 年数据的诚实注解
+        string rsiTxt = str.tostring(rsi14, "#.#") + (rsi14 >= 85 ? "｜极端超买:超买≠做空,也不是持多理由(样本仅12天)" : rsi14 >= 70 ? "｜超买:趋势中常钉住·超买≠做空" : rsi14 <= 30 ? "｜超卖:非买入理由·等确认信号" : "｜中性")
+        // 今日节奏：单边/震荡（仅显示，历史样本少的部分不下结论）
+        bool oneWayUp = not na(atrD) and rthBars >= 6 and close - pcD >= 0.8 * atrD and dayMaxDD <= 0.35 * atrD and aboveCloudBars * 100 >= rthBars * 80
+        bool oneWayDn = not na(atrD) and rthBars >= 6 and pcD - close >= 0.8 * atrD and dayMaxUU <= 0.35 * atrD and (rthBars - aboveCloudBars) * 100 >= rthBars * 80
+        string rhythmTxt = not inRth ? "盘外" : rthBars < 6 ? "开盘初段｜先看触发位方向" : oneWayUp ? "单边上行｜最大回踩仅 " + str.tostring(dayMaxDD, "#") + " 点·逆势做空是大忌" : oneWayDn ? "单边下行｜最大反抽仅 " + str.tostring(dayMaxUU, "#") + " 点·逆势抄底是大忌" : close - pcD >= 0.5 * atrD ? "偏多震荡" : pcD - close >= 0.5 * atrD ? "偏空震荡" : "区间震荡"
+        table.cell(card, 0, 6, "下一位", text_color=color.new(color.gray, 20), text_halign=text.align_left)
+        table.cell(card, 1, 6, nxtTxt, text_color=color.new(color.yellow, 10))
+        table.cell(card, 0, 7, "接下来看", text_color=color.new(color.gray, 20), text_halign=text.align_left)
+        table.cell(card, 1, 7, watchTxt, text_color=color.new(color.aqua, 20))
+        table.cell(card, 0, 8, "RSI", text_color=color.new(color.gray, 20), text_halign=text.align_left)
+        table.cell(card, 1, 8, rsiTxt, text_color=rsi14 >= 70 or rsi14 <= 30 ? color.new(color.yellow, 15) : color.new(color.gray, 30))
+        table.cell(card, 1, 5, rhythmTxt, text_color=oneWayUp or oneWayDn ? color.new(color.orange, 10) : color.new(color.gray, 30))
+        table.cell(card, 0, 9, "隔夜风险", text_color=color.new(color.gray, 20), text_halign=text.align_left)
+        table.cell(card, 1, 9, riskTxt, text_color=not na(riskScore) and riskSettledDay == etDay and riskScore >= riskThr ? color.new(color.orange, 0) : color.new(color.gray, 30))
+    else
+        table.clear(card, 0, 0, 1, 9)
+
+// ---------------- Alerts（提示不是订单）----------------
+alertcondition(trendLongSig, "Fable｜回踩买点", '回踩买点｜{{ticker}}｜确认价={{plot("T_ENTRY")}}｜止损参考={{plot("T_STOP")}}｜前高参考={{plot("T_REF")}}｜提示不是订单')
+alertcondition(trendShortSig, "Fable｜回踩卖点", '回踩卖点｜{{ticker}}｜确认价={{plot("T_ENTRY")}}｜止损参考={{plot("T_STOP")}}｜前低参考={{plot("T_REF")}}｜提示不是订单')
+alertcondition(openRevSig, "Fable｜开盘反转", '开盘下杀快速收复（更好的机会）｜{{ticker}}｜确认价={{plot("O_ENTRY")}}｜止损参考={{plot("O_STOP")}}｜提示不是订单')
+alertcondition(openRevShortSig, "Fable｜开盘回落", '开盘冲高快速回落｜{{ticker}}｜确认价={{plot("O_ENTRY")}}｜止损参考={{plot("O_STOP")}}｜提示不是订单')
+alertcondition(lvlBounceSig, "Fable｜下位反弹", '下触发位反弹｜{{ticker}}｜确认价={{plot("L_ENTRY")}}｜止损参考={{plot("L_STOP")}}｜提示不是订单')
+alertcondition(lvlRejectSig, "Fable｜上位受阻", '上触发位受阻｜{{ticker}}｜确认价={{plot("L_ENTRY")}}｜止损参考={{plot("L_STOP")}}｜提示不是订单')
+alertcondition(riskWarnSig, "Fable｜今晚风险偏高", '今晚风险偏高｜{{ticker}}｜收盘时结算（RTH 已收，只能在盘后调整）：同类夜出现 ≥0.7×日ATR 异动的概率≈平常夜 2 倍（收盘口径 32% vs 15%，n=464晚）｜只预测幅度不预测方向｜考虑减隔夜仓｜提示不是订单')
+alertcondition(nightDownSig, "Fable｜夜盘下杀", '夜盘下杀警报｜{{ticker}}｜现价={{close}}，较昨日收盘下移已超 0.7×日ATR｜动作：1)查持仓与保证金 2)砍仓/对冲/守住 三选一，选守就确认止损单已挂在场内 3)扫一眼新闻定性｜注意：本警报每晚每方向只响一次，之后继续跌也不会再响｜提示不是订单')
+alertcondition(nightUpSig, "Fable｜夜盘上冲", '夜盘上冲提示｜{{ticker}}｜现价={{close}}，较昨日收盘上移已超 0.7×日ATR｜若持隔夜空单：查保证金，决定砍或守｜若无空单：无需行动｜每晚每方向只响一次｜提示不是订单')
+// 原本一条 alert 同时承载顶/底背离——手机上无法分辨方向，而两者的动作完全相反。
+// 拆开：plot_45 保持原位(已绑定的 alert 自动变成"仅顶背离")，底背离追加在末尾且不建推送
+// （底背离经复核未过显著性检验，只留图上标记）。
+alertcondition(bearDivSig, "Fable｜顶背离警示", '顶背离警示｜{{ticker}}｜价创新高但RSI走弱，已确认高点后约70%在两小时内不再创新高（背离本身无显著加成）｜动作：不追多、不加仓、持仓守好止损｜明确不是做空信号（做空胜率43%）｜提示不是订单')
+alertcondition(bullDivSig, "Fable｜底背离（图上标记）", '底背离｜{{ticker}}｜结构事件，非买点：61%两小时后价更高 vs 同时段基线54%，未过显著性检验｜只作为等回踩买点/下位反弹的背景参考｜提示不是订单')
+
+// ============================================================
+// ==================== v2.6 追加区 ====================
+// 通道红线：上方全部 plot/fill/bgcolor/alertcondition 的数量与顺序一字不动。
+// 本区新增的 plot/alertcondition 只出现在区末（先 plot 后 alertcondition），
+// 拿 plot_46 之后的新号——实盘 7 条警报（36/37/40/42/43/44/45）零影响。
+// line/label 等 drawing 对象不参与纵轴自动缩放，这是压缩修复的原理。
+// ============================================================
+
+// ---------------- v2.6-1 ATR 阶梯改画线（纵轴压缩修复）----------------
+// 原 21 条阶梯 plot 已改 display.none（占号不变），这里用 line.new 只画"当日一套"。
+// 重建时机 = pcD 换值（覆盖夜盘换日，与旧 lvBrk 行为一致）或数组为空（首次加载/中途加图）。
+// 历史日的阶梯随重建消失——换来干净视野与预算可控（同时存活约 40 条线，上限 300）。
+var line[] ladderLn = array.new_line(0)
+f_lv(float p_, color c_, int w_, string sty_) =>
+    if not na(p_)
+        array.push(ladderLn, line.new(bar_index, p_, bar_index + 1, p_, extend=extend.right, color=c_, width=w_, style=sty_))
+
+bool ladderRebuild = barstate.isconfirmed and not na(pcD) and (pcD != pcD[1] or array.size(ladderLn) == 0)
+if ladderRebuild and showLevels
+    if array.size(ladderLn) > 0
+        for i = 0 to array.size(ladderLn) - 1
+            line.delete(array.get(ladderLn, i))
+        array.clear(ladderLn)
+    f_lv(pcD, color.new(color.gray, 20), 2, line.style_solid)
+    f_lv(LT, color.new(color.yellow, 10), 2, line.style_solid)
+    f_lv(UT, color.new(color.yellow, 10), 2, line.style_solid)
+    if showExt
+        f_lv(L38, color.new(color.silver, 55), 1, line.style_solid)
+        f_lv(U38, color.new(color.silver, 55), 1, line.style_solid)
+        f_lv(L50, color.new(color.silver, 70), 1, line.style_solid)
+        f_lv(U50, color.new(color.silver, 70), 1, line.style_solid)
+        f_lv(L61, color.new(color.silver, 55), 1, line.style_solid)
+        f_lv(U61, color.new(color.silver, 55), 1, line.style_solid)
+        f_lv(L78, color.new(color.silver, 70), 1, line.style_solid)
+        f_lv(U78, color.new(color.silver, 70), 1, line.style_solid)
+        f_lv(L100, color.new(color.orange, 35), 2, line.style_solid)
+        f_lv(U100, color.new(color.orange, 35), 2, line.style_solid)
+        f_lv(L123, color.new(color.silver, 75), 1, line.style_solid)
+        f_lv(U123, color.new(color.silver, 75), 1, line.style_solid)
+        f_lv(L138, color.new(color.silver, 75), 1, line.style_solid)
+        f_lv(U138, color.new(color.silver, 75), 1, line.style_solid)
+        f_lv(L161, color.new(color.silver, 80), 1, line.style_solid)
+        f_lv(U161, color.new(color.silver, 80), 1, line.style_solid)
+        f_lv(L200, color.new(color.red, 60), 1, line.style_solid)
+        f_lv(U200, color.new(color.red, 60), 1, line.style_solid)
+
+// ---------------- v2.6-2 关键位：昨日高低 / 夜盘高低 / 盘前高低 ----------------
+// 昨日高低：与 atrD/pcD 完全同款（[1]+lookahead=昨日已完成值，因果安全、无重绘）。
+[ydHi, ydLo] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead=barmerge.lookahead_on)
+
+// 夜盘(16:00→次日08:00)/盘前(08:00→09:30)高低：确认 bar 累计，
+// 当日第一根 RTH bar（newRthDay）冻结为当日常量——冻结后整个 RTH 一动不动。
+// RTH-only feed 无盘外 bar → 累计器保持 na，对应线不画，不报错。
+var float nightAccHi = na
+var float nightAccLo = na
+var float preAccHi = na
+var float preAccLo = na
+var bool wasNightAcc = false
+var bool wasPreAcc = false
+var float dYdHi = na
+var float dYdLo = na
+var float dNightHi = na
+var float dNightLo = na
+var float dPreHi = na
+var float dPreLo = na
+
+if barstate.isconfirmed and is10m
+    bool inNightAcc = hhmmET >= 1600 or hhmmET < 800
+    bool inPreAcc = hhmmET >= 800 and hhmmET < 930
+    if inNightAcc
+        if not wasNightAcc
+            nightAccHi := high
+            nightAccLo := low
+        else
+            nightAccHi := math.max(nz(nightAccHi, high), high)
+            nightAccLo := math.min(nz(nightAccLo, low), low)
+    if inPreAcc
+        if not wasPreAcc
+            preAccHi := high
+            preAccLo := low
+        else
+            preAccHi := math.max(nz(preAccHi, high), high)
+            preAccLo := math.min(nz(preAccLo, low), low)
+    wasNightAcc := inNightAcc
+    wasPreAcc := inPreAcc
+    if newRthDay
+        // 冻结六个当日常量（昨日高低也一并冻结，保证线和右侧价签全天一致）
+        dYdHi := ydHi
+        dYdLo := ydLo
+        dNightHi := nightAccHi
+        dNightLo := nightAccLo
+        dPreHi := preAccHi
+        dPreLo := preAccLo
+        // 清空累计器：某天缺盘外 bar（假日/断档）时不把前一天的值当今天的
+        nightAccHi := na
+        nightAccLo := na
+        preAccHi := na
+        preAccLo := na
+
+// 画线：newRthDay 全删重建（与价签 f_tag 同构的删旧重画模式，天然不重绘）
+var line[] keyLn = array.new_line(0)
+f_keyLine(float p_, color c_, int w_, string sty_) =>
+    if not na(p_)
+        array.push(keyLn, line.new(bar_index, p_, bar_index + 1, p_, extend=extend.right, color=c_, width=w_, style=sty_))
+
+if barstate.isconfirmed and is10m and newRthDay and showKeyLvls
+    if array.size(keyLn) > 0
+        for i = 0 to array.size(keyLn) - 1
+            line.delete(array.get(keyLn, i))
+        array.clear(keyLn)
+    // 层级：昨高低最醒目（最常被打的位）> 夜盘 > 盘前（点线，层级最弱）
+    f_keyLine(dYdHi, color.new(color.white, 35), 2, line.style_solid)
+    f_keyLine(dYdLo, color.new(color.white, 35), 2, line.style_solid)
+    f_keyLine(dNightHi, color.new(color.blue, 40), 1, line.style_solid)
+    f_keyLine(dNightLo, color.new(color.blue, 40), 1, line.style_solid)
+    f_keyLine(dPreHi, color.new(color.teal, 45), 1, line.style_dotted)
+    f_keyLine(dPreLo, color.new(color.teal, 45), 1, line.style_dotted)
+
+// 右侧价签：islast 删旧重建（照抄 f_tag 模式）；两条位价差 ≤0.03×日ATR 合并成一条标签
+var label[] keyTag = array.new_label(0)
+if barstate.islast and showKeyLvls and not na(atrD)
+    if array.size(keyTag) > 0
+        for i = 0 to array.size(keyTag) - 1
+            label.delete(array.get(keyTag, i))
+        array.clear(keyTag)
+    array<float> kPx = array.from(dYdHi, dYdLo, dNightHi, dNightLo, dPreHi, dPreLo)
+    array<string> kNm = array.from("昨高", "昨低", "夜高", "夜低", "盘前高", "盘前低")
+    array<float> mPx = array.new_float(0)
+    array<string> mNm = array.new_string(0)
+    array<int> mSrc = array.new_int(0)
+    for ki = 0 to 5
+        float kp_ = array.get(kPx, ki)
+        if not na(kp_)
+            bool merged_ = false
+            if array.size(mPx) > 0
+                for kj = 0 to array.size(mPx) - 1
+                    if not merged_ and math.abs(kp_ - array.get(mPx, kj)) <= 0.03 * atrD
+                        array.set(mNm, kj, array.get(mNm, kj) + "≈" + array.get(kNm, ki))
+                        merged_ := true
+            if not merged_
+                array.push(mPx, kp_)
+                array.push(mNm, array.get(kNm, ki))
+                array.push(mSrc, ki)
+    if array.size(mPx) > 0
+        for kj = 0 to array.size(mPx) - 1
+            int src_ = array.get(mSrc, kj)
+            color kc_ = src_ <= 1 ? color.new(color.white, 10) : src_ <= 3 ? color.rgb(120, 160, 255) : color.new(color.teal, 0)
+            array.push(keyTag, label.new(bar_index + 3, array.get(mPx, kj), array.get(mNm, kj) + " " + str.tostring(array.get(mPx, kj), format.mintick), style=label.style_label_left, color=color.new(color.black, 100), textcolor=kc_, size=size.small))
+
+// ---------------- v2.6-3 守住位检测 + v2.6-4 机会灯 ----------------
+// 触及=已确认 pivot（无重绘）：支撑复用 pivotlow(3,3)（滞后 3 根确认），
+// 压力复用 pivothigh(2,2)（滞后 2 根确认）——直接用上方背离模块算好的 ph/pl。
+// 已知局限：插针快速V回不形成 pivot 的触碰不计数——这是无重绘的代价，v2.6 接受；
+// "影线触及模式"留待以后验证再加。
+// 簇价锁定首次 pivot 价，不做移动平均——线永不挪动，视觉不跳。
+int holdMaxClusters = 6
+var float[] sPrice = array.new_float(0)
+var int[] sCount = array.new_int(0)
+var float[] sLastRsi = array.new_float(0)
+var int[] sFirstBar = array.new_int(0)
+var bool[] sBroken = array.new_bool(0)
+var line[] sLine = array.new_line(0)
+var label[] sLabel = array.new_label(0)
+var float[] rPrice = array.new_float(0)
+var int[] rCount = array.new_int(0)
+var float[] rLastRsi = array.new_float(0)
+var int[] rFirstBar = array.new_int(0)
+var bool[] rBroken = array.new_bool(0)
+var line[] rLine = array.new_line(0)
+var label[] rLabel = array.new_label(0)
+
+bool holdMomoLongSig = false
+bool holdMomoShortSig = false
+var float hSupLvlP = na
+var float hResLvlP = na
+
+// 日界重置：线/标签全删 + 数组全清（隔夜跳空会让昨天的簇失真，另起炉灶）
+if barstate.isconfirmed and is10m and newRthDay
+    if array.size(sLine) > 0
+        for j = 0 to array.size(sLine) - 1
+            line lnD = array.get(sLine, j)
+            if not na(lnD)
+                line.delete(lnD)
+            label lbD = array.get(sLabel, j)
+            if not na(lbD)
+                label.delete(lbD)
+    if array.size(rLine) > 0
+        for j = 0 to array.size(rLine) - 1
+            line lnD2 = array.get(rLine, j)
+            if not na(lnD2)
+                line.delete(lnD2)
+            label lbD2 = array.get(rLabel, j)
+            if not na(lbD2)
+                label.delete(lbD2)
+    array.clear(sPrice)
+    array.clear(sCount)
+    array.clear(sLastRsi)
+    array.clear(sFirstBar)
+    array.clear(sBroken)
+    array.clear(sLine)
+    array.clear(sLabel)
+    array.clear(rPrice)
+    array.clear(rCount)
+    array.clear(rLastRsi)
+    array.clear(rFirstBar)
+    array.clear(rBroken)
+    array.clear(rLine)
+    array.clear(rLabel)
+
+// 支撑侧：已确认 pivot 低点归簇（容差 holdTolAtr×日ATR）
+if useHold and barstate.isconfirmed and is10m and inRth and not na(pl) and not na(atrD)
+    float sPivPrice = pl
+    float sPivRsi = rsi14[3]            // pivotlow(3,3) → RSI 取滞后 3 根的历史值
+    int sPivBar = bar_index - 3
+    int sHit = -1
+    if array.size(sPrice) > 0
+        for j = 0 to array.size(sPrice) - 1
+            if sHit < 0 and not array.get(sBroken, j) and math.abs(sPivPrice - array.get(sPrice, j)) <= holdTolAtr * atrD
+                sHit := j
+    if sHit >= 0
+        float sPrevRsi = array.get(sLastRsi, sHit)
+        array.set(sCount, sHit, array.get(sCount, sHit) + 1)
+        array.set(sLastRsi, sHit, sPivRsi)
+        int sN = array.get(sCount, sHit)
+        float sLvl = array.get(sPrice, sHit)
+        if sN == 2
+            // 触 1 次不算数，第 2 次守住才上图
+            array.set(sLine, sHit, line.new(array.get(sFirstBar, sHit), sLvl, bar_index, sLvl, extend=extend.right, color=color.new(color.green, 45), width=2))
+            array.set(sLabel, sHit, label.new(bar_index + 3, sLvl, "守住×2", style=label.style_label_left, color=color.new(color.black, 100), textcolor=color.new(color.green, 10), size=size.small))
+        else if sN >= 3 and not na(array.get(sLabel, sHit))
+            label.set_text(array.get(sLabel, sHit), "守住×" + str.tostring(sN))
+        // 机会灯：同一支撑至少第 2 次守住且这次 RSI 比上次更高（背景参考，无回测证据）
+        if sN >= 2 and sPivRsi >= sPrevRsi + momoMinRsi
+            if canSignal
+                holdMomoLongSig := true
+                hSupLvlP := sLvl
+            if showMomoDot
+                label.new(sPivBar, sPivPrice - 0.15 * atrD, "", style=label.style_circle, color=color.new(color.teal, 20), size=size.tiny, tooltip="支撑第" + str.tostring(sN) + "次守住·动能抬升——蓄力形态｜RSI " + str.tostring(sPrevRsi, "#.#") + "→" + str.tostring(sPivRsi, "#.#"))
+    else if array.size(sPrice) < holdMaxClusters
+        array.push(sPrice, sPivPrice)
+        array.push(sCount, 1)
+        array.push(sLastRsi, sPivRsi)
+        array.push(sFirstBar, sPivBar)
+        array.push(sBroken, false)
+        array.push(sLine, line(na))
+        array.push(sLabel, label(na))
+
+// 压力侧：已确认 pivot 高点归簇（支撑侧镜像）
+if useHold and barstate.isconfirmed and is10m and inRth and not na(ph) and not na(atrD)
+    float rPivPrice = ph
+    float rPivRsi = rsi14[2]            // pivothigh(2,2) → RSI 取滞后 2 根的历史值
+    int rPivBar = bar_index - 2
+    int rHit = -1
+    if array.size(rPrice) > 0
+        for j = 0 to array.size(rPrice) - 1
+            if rHit < 0 and not array.get(rBroken, j) and math.abs(rPivPrice - array.get(rPrice, j)) <= holdTolAtr * atrD
+                rHit := j
+    if rHit >= 0
+        float rPrevRsi = array.get(rLastRsi, rHit)
+        array.set(rCount, rHit, array.get(rCount, rHit) + 1)
+        array.set(rLastRsi, rHit, rPivRsi)
+        int rN = array.get(rCount, rHit)
+        float rLvl = array.get(rPrice, rHit)
+        if rN == 2
+            array.set(rLine, rHit, line.new(array.get(rFirstBar, rHit), rLvl, bar_index, rLvl, extend=extend.right, color=color.new(color.red, 45), width=2))
+            array.set(rLabel, rHit, label.new(bar_index + 3, rLvl, "拒绝×2", style=label.style_label_left, color=color.new(color.black, 100), textcolor=color.new(color.red, 10), size=size.small))
+        else if rN >= 3 and not na(array.get(rLabel, rHit))
+            label.set_text(array.get(rLabel, rHit), "拒绝×" + str.tostring(rN))
+        // 机会灯镜像：同一压力至少第 2 次拒绝且这次 RSI 比上次更低 → 承压形态
+        if rN >= 2 and rPivRsi <= rPrevRsi - momoMinRsi
+            if canSignal
+                holdMomoShortSig := true
+                hResLvlP := rLvl
+            if showMomoDot
+                label.new(rPivBar, rPivPrice + 0.15 * atrD, "", style=label.style_circle, color=color.new(color.red, 20), size=size.tiny, tooltip="压力第" + str.tostring(rN) + "次拒绝·动能转弱——承压形态｜RSI " + str.tostring(rPrevRsi, "#.#") + "→" + str.tostring(rPivRsi, "#.#"))
+    else if array.size(rPrice) < holdMaxClusters
+        array.push(rPrice, rPivPrice)
+        array.push(rCount, 1)
+        array.push(rLastRsi, rPivRsi)
+        array.push(rFirstBar, rPivBar)
+        array.push(rBroken, false)
+        array.push(rLine, line(na))
+        array.push(rLabel, label(na))
+
+// 收破处理：每根确认 RTH bar 扫描未破簇（余量口径与关键位模块 broken 判定的 0.10 一致）
+if useHold and barstate.isconfirmed and is10m and inRth and not na(atrD)
+    if array.size(sPrice) > 0
+        for j = 0 to array.size(sPrice) - 1
+            if not array.get(sBroken, j) and close < array.get(sPrice, j) - holdBreakAtr * atrD
+                array.set(sBroken, j, true)
+                line sLn = array.get(sLine, j)
+                if not na(sLn)
+                    line.set_style(sLn, line.style_dashed)
+                    line.set_color(sLn, color.new(color.green, 80))
+                    line.set_extend(sLn, extend.none)
+                    line.set_x2(sLn, bar_index)
+                label sLb = array.get(sLabel, j)
+                if not na(sLb)
+                    label.set_text(sLb, "已破·曾守住×" + str.tostring(array.get(sCount, j)))
+                    label.set_textcolor(sLb, color.new(color.gray, 30))
+    if array.size(rPrice) > 0
+        for j = 0 to array.size(rPrice) - 1
+            if not array.get(rBroken, j) and close > array.get(rPrice, j) + holdBreakAtr * atrD
+                array.set(rBroken, j, true)
+                line rLn = array.get(rLine, j)
+                if not na(rLn)
+                    line.set_style(rLn, line.style_dashed)
+                    line.set_color(rLn, color.new(color.red, 80))
+                    line.set_extend(rLn, extend.none)
+                    line.set_x2(rLn, bar_index)
+                label rLb = array.get(rLabel, j)
+                if not na(rLb)
+                    label.set_text(rLb, "已破·曾拒绝×" + str.tostring(array.get(rCount, j)))
+                    label.set_textcolor(rLb, color.new(color.gray, 30))
+
+// 守住位标签跟随最右端（islast 挪 x，不删不重建）
+if barstate.islast and useHold
+    if array.size(sLabel) > 0
+        for j = 0 to array.size(sLabel) - 1
+            label sLb2 = array.get(sLabel, j)
+            if not na(sLb2)
+                label.set_x(sLb2, bar_index + 3)
+    if array.size(rLabel) > 0
+        for j = 0 to array.size(rLabel) - 1
+            label rLb2 = array.get(rLabel, j)
+            if not na(rLb2)
+                label.set_x(rLb2, bar_index + 3)
+
+// ---------------- v2.6 新通道（先 plot 后 alertcondition，拿 46 之后的新号）----------------
+plot(math.round_to_mintick(hSupLvlP), "H_SUP", display=display.none)
+plot(math.round_to_mintick(hResLvlP), "H_RES", display=display.none)
+alertcondition(holdMomoLongSig, "Fable｜支撑反复守住·动能抬升", '支撑反复守住·动能抬升——蓄力形态｜{{ticker}}｜守住位={{plot("H_SUP")}}｜同一支撑至少第2次踩住未收破，且这次触及时RSI比上次更高｜背景参考·不是买入指令｜提示不是订单')
+alertcondition(holdMomoShortSig, "Fable｜压力反复拒绝·动能转弱", '压力反复拒绝·动能转弱——承压形态｜{{ticker}}｜拒绝位={{plot("H_RES")}}｜同一压力至少第2次冲不破，且这次触及时RSI比上次更低｜背景参考·不是卖出指令｜提示不是订单')
