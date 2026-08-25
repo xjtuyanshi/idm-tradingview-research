@@ -2,7 +2,7 @@
 indicator("Fable Signal v1", shorttitle="Fable Signal", overlay=true, max_labels_count=500, max_lines_count=300)
 
 // ============================================================
-// Fable Signal v3.0.1 — 与 fable-buddy（System）统一口径的图上地图。
+// Fable Signal v3.0.2 — 与 fable-buddy（System）统一口径的图上地图。
 // 定位：System 的"眼睛"。判断与推送来自 fable-buddy；本图负责把 System
 // 引用的位、云、触及计数原样画出来。图上标记是「结构事件」，不是买卖建议。
 //
@@ -42,47 +42,49 @@ indicator("Fable Signal v1", shorttitle="Fable Signal", overlay=true, max_labels
 
 // ---------------- 输入 ----------------
 string G1 = "时段（美东时间）"
-string sigSession = input.session("0930-1520", "信号时段｜15:20 后不再发（尾盘信号无法执行）", group=G1)
-bool includePre = input.bool(false, "盘前也给信号（08:00 起）", group=G1)
+string sigSession = input.session("0930-1520", "信号时段｜15:20 后不再发（尾盘信号无法执行）", group=G1, display=display.none)
+bool includePre = input.bool(false, "盘前也给信号（08:00 起）", group=G1, display=display.none)
 
 string G2 = "模块开关"
-bool useTrend = input.bool(true, "回踩-收回 结构事件", group=G2)
-bool useOpen = input.bool(false, "开盘下杀-快速收复（多）｜出场方式待重测，默认关", group=G2)
-bool useOpenS = input.bool(false, "开盘冲高-快速回落（空）｜未回测默认关", group=G2)
-bool useLevel = input.bool(true, "盒顶/盒底反应（±0.236 触发位）", group=G2)
-bool useDiv = input.bool(true, "RSI 背离警告", group=G2)
-bool useShort = input.bool(true, "允许空头侧事件", group=G2)
-bool useNight = input.bool(true, "夜盘异动哨兵（距昨收 ≥0.7×日ATR 时提醒）", group=G2)
-bool useRisk = input.bool(true, "夜盘风险评分（收盘前提示今晚是否不安分）", group=G2)
-bool useHold = input.bool(true, "守住/拒绝位自动检测", group=G2)
-bool useWalls = input.bool(true, "当日高低重测墙（≥30分钟未刷新成墙）", group=G2)
+bool useTrend = input.bool(true, "回踩-收回 结构事件", group=G2, display=display.none)
+bool useOpen = input.bool(false, "开盘下杀-快速收复（多）｜出场方式待重测，默认关", group=G2, display=display.none)
+bool useOpenS = input.bool(false, "开盘冲高-快速回落（空）｜未回测默认关", group=G2, display=display.none)
+bool useLevel = input.bool(true, "盒顶/盒底反应（±0.236 触发位）", group=G2, display=display.none)
+bool useDiv = input.bool(true, "RSI 背离警告", group=G2, display=display.none)
+bool useShort = input.bool(true, "允许空头侧事件", group=G2, display=display.none)
+bool useNight = input.bool(true, "夜盘异动哨兵（距昨收 ≥0.7×日ATR 时提醒）", group=G2, display=display.none)
+bool useRisk = input.bool(true, "夜盘风险评分（收盘前提示今晚是否不安分）", group=G2, display=display.none)
+bool useHold = input.bool(true, "守住/拒绝位自动检测", group=G2, display=display.none)
+bool useWalls = input.bool(true, "当日高低重测墙（≥30分钟未刷新成墙）", group=G2, display=display.none)
 
 string G3 = "参数（回测/System 校准，改前想清楚）"
-float departMinAtr = input.float(0.12, "离带最小行程（×日ATR）", minval=0.0, step=0.01, group=G3)
-int reclaimBars = input.int(6, "回踩后等收回的最大10m根数", minval=2, maxval=12, group=G3)
-float openDipAtr = input.float(0.15, "开盘下杀最小深度（×日ATR）", minval=0.05, step=0.01, group=G3)
-int openEndHHMM = input.int(1030, "开盘反转窗口截止（HHMM ET）", group=G3)
-float trigPct = input.float(0.236, "盒边距离（×日ATR·System 同款）", step=0.001, group=G3)
-float rearmAtr = input.float(0.12, "盒边反应重新武装距离（×日ATR）", step=0.01, group=G3)
-float divMinRsiTop = input.float(3.0, "顶背离最小RSI差（回测校准:3）", step=0.5, group=G3)
-float divMinRsiBot = input.float(1.0, "底背离最小RSI差（回测校准:1）", step=0.5, group=G3)
-float nightThr = input.float(0.7, "夜盘异动阈值（×日ATR）", minval=0.3, step=0.05, group=G3)
-float riskThr = input.float(4.0, "风险评分阈值（实测≈5.8次/月）", step=0.5, group=G3)
-float holdTolAtr = input.float(0.06, "守住位聚类容差（×日ATR）", minval=0.01, step=0.01, group=G3)
-float holdBreakAtr = input.float(0.10, "收破判定余量（×日ATR）", minval=0.02, step=0.01, group=G3)
-float momoMinRsi = input.float(1.0, "机会灯最小RSI差（较上次触及）", minval=0.0, step=0.5, group=G3)
-float touchInAtr = input.float(0.03, "触及计数进带（×日ATR·engine 同款）", minval=0.01, step=0.01, group=G3)
-float touchOutAtr = input.float(0.05, "触及计数出带再武装（×日ATR）", minval=0.02, step=0.01, group=G3)
-int wallMinBars = input.int(3, "极值成墙最少10m根数（3根=30分钟）", minval=1, maxval=12, group=G3)
+float departMinAtr = input.float(0.12, "离带最小行程（×日ATR）", minval=0.0, step=0.01, group=G3, display=display.none)
+int reclaimBars = input.int(6, "回踩后等收回的最大10m根数", minval=2, maxval=12, group=G3, display=display.none)
+float openDipAtr = input.float(0.15, "开盘下杀最小深度（×日ATR）", minval=0.05, step=0.01, group=G3, display=display.none)
+int openEndHHMM = input.int(1030, "开盘反转窗口截止（HHMM ET）", group=G3, display=display.none)
+float trigPct = input.float(0.236, "盒边距离（×日ATR·System 同款）", step=0.001, group=G3, display=display.none)
+float rearmAtr = input.float(0.12, "盒边反应重新武装距离（×日ATR）", step=0.01, group=G3, display=display.none)
+float divMinRsiTop = input.float(3.0, "顶背离最小RSI差（回测校准:3）", step=0.5, group=G3, display=display.none)
+float divMinRsiBot = input.float(1.0, "底背离最小RSI差（回测校准:1）", step=0.5, group=G3, display=display.none)
+float nightThr = input.float(0.7, "夜盘异动阈值（×日ATR）", minval=0.3, step=0.05, group=G3, display=display.none)
+float riskThr = input.float(4.0, "风险评分阈值（实测≈5.8次/月）", step=0.5, group=G3, display=display.none)
+float holdTolAtr = input.float(0.06, "守住位聚类容差（×日ATR）", minval=0.01, step=0.01, group=G3, display=display.none)
+float holdBreakAtr = input.float(0.10, "收破判定余量（×日ATR）", minval=0.02, step=0.01, group=G3, display=display.none)
+float momoMinRsi = input.float(1.0, "机会灯最小RSI差（较上次触及）", minval=0.0, step=0.5, group=G3, display=display.none)
+float touchInAtr = input.float(0.03, "触及计数进带（×日ATR·engine 同款）", minval=0.01, step=0.01, group=G3, display=display.none)
+float touchOutAtr = input.float(0.05, "触及计数出带再武装（×日ATR）", minval=0.02, step=0.01, group=G3, display=display.none)
+int wallMinBars = input.int(3, "极值成墙最少10m根数（3根=30分钟）", minval=1, maxval=12, group=G3, display=display.none)
 
 string G4 = "显示"
-bool showLevels = input.bool(true, "画 ATR 梯位", group=G4)
-bool showKeyLvls = input.bool(true, "画昨日/夜盘高低", group=G4)
-bool showTags = input.bool(true, "右侧价签", group=G4)
-bool showMidTags = input.bool(false, "中间梯位也标价签（±0.382~±0.786）", group=G4)
-bool showClouds = input.bool(true, "画云与均线", group=G4)
-bool showMomoDot = input.bool(true, "显示机会灯小圆点", group=G4)
-bool showCard = input.bool(true, "显示状态卡", group=G4)
+bool showLevels = input.bool(true, "画 ATR 梯位", group=G4, display=display.none)
+bool showKeyLvls = input.bool(true, "画昨日/夜盘高低", group=G4, display=display.none)
+bool showTags = input.bool(true, "右侧价签", group=G4, display=display.none)
+bool showMidTags = input.bool(false, "中间梯位也标价签（±0.382~±0.786）", group=G4, display=display.none)
+bool showClouds = input.bool(true, "画云与均线", group=G4, display=display.none)
+bool showMomoDot = input.bool(true, "显示机会灯小圆点", group=G4, display=display.none)
+bool showCard = input.bool(true, "显示状态卡", group=G4, display=display.none)
+bool yieldToSaty = input.bool(false, "同屏 Saty：锚/盒顶/盒底不画线（价签保留）", group=G4, display=display.none)
+bool showEma21 = input.bool(false, "画 EMA21 细线", group=G4, display=display.none)
 
 // ---------------- 色板（console 方案 D 中性灰，全站禁暖色）----------------
 color INK1 = color.rgb(244, 244, 245)      // 主数值/锚
@@ -674,11 +676,11 @@ if nightUpSig
 // ---------------- 绘制：云与均线 ----------------
 pF1 = plot(showClouds ? fastU : na, "快带上沿(8/13)", display=display.none)
 pF2 = plot(showClouds ? fastL : na, "快带下沿(8/13)", display=display.none)
-fill(pF1, pF2, color=e8 > e13 ? color.new(UPDIM, 82) : color.new(DNDIM, 82), title="快带 8/13")
-plot(showClouds ? e21 : na, "EMA21", color=color.new(INK3, 55), linewidth=1)
+fill(pF1, pF2, color=e8 > e13 ? color.new(UPDIM, 88) : color.new(DNDIM, 88), title="快带 8/13")
+plot(showClouds and showEma21 ? e21 : na, "EMA21", color=color.new(INK3, 55), linewidth=1, display=display.pane)
 pS1 = plot(showClouds ? slowTop : na, "慢云上沿(34/48)", display=display.none)
 pS2 = plot(showClouds ? slowBot : na, "慢云下沿(34/48)", display=display.none)
-fill(pS1, pS2, color=stackBull ? color.new(UPDIM, 65) : stackBear ? color.new(DNDIM, 65) : color.new(HAIRC, 70), title="慢云 34/48")
+fill(pS1, pS2, color=stackBull ? color.new(UPDIM, 78) : stackBear ? color.new(DNDIM, 78) : color.new(HAIRC, 80), title="慢云 34/48")
 
 // ---------------- 绘制：结构事件小标记（详情看状态卡与推送）----------------
 plotshape(trendLongSig, "回踩收回·多", style=shape.triangleup, location=location.belowbar, color=UPC, size=size.small, display=display.pane)
@@ -708,7 +710,8 @@ if frameChg and showLevels
         array.clear(ladderLn)
     for ri2 = 0 to 12
         float lp3 = array.get(lvPx, ri2)
-        if not na(lp3)
+        // 同屏 Saty 让位：锚/盒顶/盒底与 Saty ATR Levels 同价，可只留价签不画线（评审建议4）
+        if not na(lp3) and not (yieldToSaty and (ri2 == 0 or ri2 == 1 or ri2 == 7))
             color lc_ = ri2 == 0 ? color.new(INK2, 25) : ri2 == 1 or ri2 == 7 ? color.new(LINEC, 0) : ri2 == 6 or ri2 == 12 ? color.new(INK3, 40) : color.new(HAIRC, 0)
             int lw_ = ri2 == 0 or ri2 == 1 or ri2 == 7 ? 2 : 1
             array.push(ladderLn, line.new(bar_index, lp3, bar_index + 1, lp3, extend=extend.right, color=lc_, width=lw_))
@@ -738,7 +741,7 @@ if barstate.isconfirmed and is10m and showKeyLvls and (na(keySigPrev) or keySigP
 var label[] tagLs = array.new_label(0)
 f_tag(float p_, string txt_, color c_, string sz_) =>
     if not na(p_)
-        array.push(tagLs, label.new(bar_index + 2, p_, txt_, style=label.style_label_right, color=color.new(color.black, 100), textcolor=c_, size=sz_))
+        array.push(tagLs, label.new(bar_index + 6, p_, txt_, style=label.style_label_right, color=color.new(color.black, 100), textcolor=c_, size=sz_))
 
 if barstate.islast and showTags
     if array.size(tagLs) > 0
@@ -914,7 +917,7 @@ if useHold and barstate.isconfirmed and is10m and not na(atrD) and atrD > 0
                     array.set(sLastRsi, j, rsi14)
                     if sN == 2
                         array.set(sLine, j, line.new(array.get(sFirstBar, j), sp_, bar_index, sp_, extend=extend.right, color=color.new(UPC, 35), width=2))
-                        array.set(sLabel, j, label.new(bar_index + 2, sp_, "守住×2", style=label.style_label_right, color=color.new(color.black, 100), textcolor=UPC, size=size.small))
+                        array.set(sLabel, j, label.new(bar_index + 6, sp_, "守住×2", style=label.style_label_right, color=color.new(color.black, 100), textcolor=UPC, size=size.small))
                     else if sN >= 3 and not na(array.get(sLabel, j))
                         label.set_text(array.get(sLabel, j), "守住×" + str.tostring(sN))
                     if sN >= 2 and rsi14 >= sPrevRsi + momoMinRsi
@@ -949,7 +952,7 @@ if useHold and barstate.isconfirmed and is10m and not na(atrD) and atrD > 0
                     array.set(rLastRsi, j, rsi14)
                     if rN == 2
                         array.set(rLine, j, line.new(array.get(rFirstBar, j), rp_, bar_index, rp_, extend=extend.right, color=color.new(DNC, 35), width=2))
-                        array.set(rLabel, j, label.new(bar_index + 2, rp_, "拒绝×2", style=label.style_label_right, color=color.new(color.black, 100), textcolor=DNC, size=size.small))
+                        array.set(rLabel, j, label.new(bar_index + 6, rp_, "拒绝×2", style=label.style_label_right, color=color.new(color.black, 100), textcolor=DNC, size=size.small))
                     else if rN >= 3 and not na(array.get(rLabel, j))
                         label.set_text(array.get(rLabel, j), "拒绝×" + str.tostring(rN))
                     if rN >= 2 and rsi14 <= rPrevRsi - momoMinRsi
@@ -978,15 +981,15 @@ if barstate.islast and useHold
         for j = 0 to array.size(sLabel) - 1
             label sLb2 = array.get(sLabel, j)
             if not na(sLb2)
-                label.set_x(sLb2, bar_index + 2)
+                label.set_x(sLb2, bar_index + 6)
     if array.size(rLabel) > 0
         for j = 0 to array.size(rLabel) - 1
             label rLb2 = array.get(rLabel, j)
             if not na(rLb2)
-                label.set_x(rLb2, bar_index + 2)
+                label.set_x(rLb2, bar_index + 6)
 
 // ---------------- 状态卡（7 行，System 词汇）----------------
-var table card = table.new(position.bottom_right, 2, 7, bgcolor=color.new(CARDBG, 0), frame_color=HAIRC, frame_width=1)
+var table card = table.new(position.bottom_right, 2, 8, bgcolor=color.new(CARDBG, 0), frame_color=HAIRC, frame_width=1)
 if barstate.islast
     if showCard
         // 结构行：慢云位置 + 排列（=System 每张卡的 ctx 行）
@@ -1011,7 +1014,7 @@ if barstate.islast
                 if np_ < close and (na(nxtDn) or np_ > nxtDn)
                     nxtDn := np_
                     nxtDnTxt := array.get(lvNm, ni) + " " + str.tostring(np_, format.mintick) + (array.get(lvN, ni) >= 2 ? "(×" + str.tostring(array.get(lvN, ni)) + ")" : "")
-        string nxtTxt = (nxtDnTxt == "" ? "—" : nxtDnTxt) + "  ↕  " + (nxtUpTxt == "" ? "—" : nxtUpTxt)
+        string nxtTxt = "↓" + (nxtDnTxt == "" ? "—" : nxtDnTxt) + "｜↑" + (nxtUpTxt == "" ? "—" : nxtUpTxt)
         // 接下来看（状态机下一个转移条件讲成人话）
         string bearNeed = not na(lastPhPrice) and bar_index - lastPhBar <= 30 ? "顶背离需:高过 " + str.tostring(lastPhPrice, format.mintick) + " 且RSI<" + str.tostring(lastPhRsi - divMinRsiTop, "#.#") : "等新的确认高点"
         string bullNeed = not na(lastPlPrice) and bar_index - lastPlBar <= 30 ? "底背离需:跌破 " + str.tostring(lastPlPrice, format.mintick) + " 且RSI>" + str.tostring(lastPlRsi + divMinRsiBot, "#.#") : "等新的确认低点"
@@ -1045,8 +1048,11 @@ if barstate.islast
         table.cell(card, 1, 5, cautionOn ? cautionTxt : "—｜最近 " + lastSignalText, text_color=cautionOn ? INK1 : INK3, text_size=size.small)
         table.cell(card, 0, 6, lastSigLive ? "若已进场" : "隔夜风险", text_color=INK3, text_halign=text.align_left, text_size=size.small)
         table.cell(card, 1, 6, lastSigLive ? posTxt2 : riskTxt, text_color=lastSigLive ? (lastSigDir == 1 ? UPC : DNC) : riskHot ? INK1 : INK3, text_size=size.small)
+        // 垫行：TV 右下角 ⚡ 快捷按钮会盖住卡片最底部（评审必修1），空一行让它落在垫行上
+        table.cell(card, 0, 7, " ", text_size=size.small)
+        table.cell(card, 1, 7, " \n ", text_size=size.small)
     else
-        table.clear(card, 0, 0, 1, 6)
+        table.clear(card, 0, 0, 1, 7)
 
 // ---------------- Alerts（提示不是订单；标题/文案=v2.6.2 逐字，勿改）----------------
 alertcondition(trendLongSig, "Fable｜回踩买点", '回踩买点｜{{ticker}}｜确认价={{plot("T_ENTRY")}}｜止损参考={{plot("T_STOP")}}｜前高参考={{plot("T_REF")}}｜提示不是订单')
@@ -1064,7 +1070,7 @@ alertcondition(bullDivSig, "Fable｜底背离（图上标记）", '底背离｜{
 // ---------------- 机会灯通道与警报（v2.6 追加号位保持在末尾）----------------
 plot(math.round_to_mintick(hSupLvlP), "H_SUP", display=display.none)
 plot(math.round_to_mintick(hResLvlP), "H_RES", display=display.none)
-plotshape(momoDotL and showMomoDot, "机会灯·支撑蓄力", style=shape.circle, location=location.belowbar, color=color.new(UPC, 20), size=size.tiny, display=display.pane)
-plotshape(momoDotR and showMomoDot, "机会灯·压力承压", style=shape.circle, location=location.abovebar, color=color.new(DNC, 20), size=size.tiny, display=display.pane)
+plotshape(momoDotL and showMomoDot, "机会灯·支撑蓄力", style=shape.circle, location=location.belowbar, color=color.new(UPC, 45), size=size.tiny, display=display.pane)
+plotshape(momoDotR and showMomoDot, "机会灯·压力承压", style=shape.circle, location=location.abovebar, color=color.new(DNC, 45), size=size.tiny, display=display.pane)
 alertcondition(holdMomoLongSig, "Fable｜支撑反复守住·动能抬升", '支撑反复守住·动能抬升——蓄力形态｜{{ticker}}｜守住位={{plot("H_SUP")}}｜同一支撑至少第2次踩住未收破，且这次触及时RSI比上次更高｜背景参考·不是买入指令｜提示不是订单')
 alertcondition(holdMomoShortSig, "Fable｜压力反复拒绝·动能转弱", '压力反复拒绝·动能转弱——承压形态｜{{ticker}}｜拒绝位={{plot("H_RES")}}｜同一压力至少第2次冲不破，且这次触及时RSI比上次更低｜背景参考·不是卖出指令｜提示不是订单')
