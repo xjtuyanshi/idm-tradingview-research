@@ -2,7 +2,7 @@
 indicator("Fable Signal v1", shorttitle="Fable Signal", overlay=true, max_labels_count=500, max_lines_count=300)
 
 // ============================================================
-// Fable Signal v3.0.2 — 与 fable-buddy（System）统一口径的图上地图。
+// Fable Signal v3.1.0 — 与 fable-buddy（System）统一口径的图上地图。
 // 定位：System 的"眼睛"。判断与推送来自 fable-buddy；本图负责把 System
 // 引用的位、云、触及计数原样画出来。图上标记是「结构事件」，不是买卖建议。
 //
@@ -83,7 +83,7 @@ bool showMidTags = input.bool(false, "中间梯位也标价签（±0.382~±0.786
 bool showClouds = input.bool(true, "画云与均线", group=G4, display=display.none)
 bool showMomoDot = input.bool(true, "显示机会灯小圆点", group=G4, display=display.none)
 bool showCard = input.bool(true, "显示状态卡", group=G4, display=display.none)
-bool yieldToSaty = input.bool(false, "同屏 Saty：锚/盒顶/盒底不画线（价签保留）", group=G4, display=display.none)
+bool yieldToSaty = input.bool(true, "同屏 Saty：锚/盒顶/盒底不画线（价签保留）", group=G4, display=display.none)
 bool showEma21 = input.bool(false, "画 EMA21 细线", group=G4, display=display.none)
 
 // ---------------- 色板（console 方案 D 中性灰，全站禁暖色）----------------
@@ -178,6 +178,7 @@ var string[] lvNm = array.from("锚", "盒顶", "+0.382", "+0.5", "+0.618", "+0.
 var float[] lvPx = array.new_float(19, na)
 var int[] lvN = array.new_int(19, 0)
 var bool[] lvIn = array.new_bool(19, false)
+var float[] lvRsi = array.new_float(19, na)   // 每槽上次触及时的 RSI（机会灯比较用）
 
 f_setLv(int i_, float p_) =>
     float old_ = array.get(lvPx, i_)
@@ -186,10 +187,12 @@ f_setLv(int i_, float p_) =>
             array.set(lvPx, i_, na)
             array.set(lvN, i_, 0)
             array.set(lvIn, i_, false)
+            array.set(lvRsi, i_, na)
     else if na(old_) or math.abs(p_ - old_) > syminfo.mintick / 2
         array.set(lvPx, i_, p_)
         array.set(lvN, i_, 0)
         array.set(lvIn, i_, false)
+        array.set(lvRsi, i_, na)
 
 // 梯位槽：锚或ATR换值（=换交易日帧）才重算，帧内一动不动
 bool frameChg = barstate.isconfirmed and not na(pcD) and not na(atrD) and (na(pcD[1]) or na(atrD[1]) or pcD != pcD[1] or atrD != atrD[1])
@@ -577,6 +580,14 @@ if barstate.isconfirmed and is10m and useWalls
                 wallLoLn := line.new(bar_index - loAge, dayRunLo, bar_index, dayRunLo, extend=extend.right, color=color.new(INK3, 25), width=1)
                 f_setLv(18, dayRunLo)
 
+// 机会灯旗标（登记表计数循环与守住簇共用，先声明）
+bool holdMomoLongSig = false
+bool holdMomoShortSig = false
+bool momoDotL = false
+bool momoDotR = false
+var float hSupLvlP = na
+var float hResLvlP = na
+
 // ---------------- 9) 触及计数（全时段，engine 插针口径）----------------
 if barstate.isconfirmed and is10m and not na(atrD) and atrD > 0
     for ci = 0 to 18
@@ -584,8 +595,24 @@ if barstate.isconfirmed and is10m and not na(atrD) and atrD > 0
         if not na(lp2)
             float d2 = (low - lp2) * (high - lp2) <= 0 ? 0.0 : math.min(math.abs(low - lp2), math.abs(high - lp2))
             if not array.get(lvIn, ci) and d2 <= touchInAtr * atrD
-                array.set(lvN, ci, array.get(lvN, ci) + 1)
+                int nN_ = array.get(lvN, ci) + 1
+                array.set(lvN, ci, nN_)
                 array.set(lvIn, ci, true)
+                // 梯位机会灯（=engine 位守住/位压住语义）：同一位第 ≥2 次触及，
+                // 插针守住（低点刺穿、收盘收回其上）且 RSI 比上次触及更高 → 蓄力；压力侧镜像
+                float pRsi_ = array.get(lvRsi, ci)
+                if nN_ >= 2 and not na(pRsi_)
+                    if low <= lp2 and close > lp2 and rsi14 >= pRsi_ + momoMinRsi
+                        momoDotL := true
+                        if canSignal
+                            holdMomoLongSig := true
+                            hSupLvlP := lp2
+                    else if high >= lp2 and close < lp2 and rsi14 <= pRsi_ - momoMinRsi
+                        momoDotR := true
+                        if canSignal
+                            holdMomoShortSig := true
+                            hResLvlP := lp2
+                array.set(lvRsi, ci, rsi14)
             else if array.get(lvIn, ci) and d2 > touchOutAtr * atrD
                 array.set(lvIn, ci, false)
 
@@ -756,9 +783,10 @@ if barstate.islast and showTags
                 int tn_ = array.get(lvN, ri3)
                 bool core_ = ri3 == 0 or ri3 == 1 or ri3 == 7 or ri3 == 6 or ri3 == 12
                 if core_ or showMidTags or tn_ >= 2
-                    string cnt_ = tn_ >= 2 ? " ×" + str.tostring(tn_) : ""
-                    color tc_ = ri3 == 0 ? INK1 : core_ ? INK2 : INK3
-                    f_tag(tp_, array.get(lvNm, ri3) + " " + str.tostring(tp_, format.mintick) + cnt_, tc_, core_ ? size.small : size.tiny)
+                    bool sup_ = tp_ <= close
+                    string cnt_ = tn_ >= 2 ? (sup_ ? " 守住×" : " 拒绝×") + str.tostring(tn_) : ""
+                    color tc_ = tn_ >= 2 ? (sup_ ? UPC : DNC) : ri3 == 0 ? INK1 : core_ ? INK2 : INK3
+                    f_tag(tp_, array.get(lvNm, ri3) + " " + str.tostring(tp_, format.mintick) + cnt_, tc_, tn_ >= 2 or core_ ? size.small : size.tiny)
     // 昨日/夜盘高低签（价差 ≤0.03×ATR 合并成一条）
     if showKeyLvls and not na(atrD)
         array<float> kPx = array.from(array.get(lvPx, 13), array.get(lvPx, 14), array.get(lvPx, 15), array.get(lvPx, 16))
@@ -783,16 +811,20 @@ if barstate.islast and showTags
                     array.push(mN, array.get(lvN, array.get(kIdx, ki2)))
         if array.size(mPx) > 0
             for kj2 = 0 to array.size(mPx) - 1
-                string kc_ = array.get(mN, kj2) >= 2 ? " ×" + str.tostring(array.get(mN, kj2)) : ""
-                f_tag(array.get(mPx, kj2), array.get(mNm, kj2) + " " + str.tostring(array.get(mPx, kj2), format.mintick) + kc_, INK2, size.small)
+                int kn_ = array.get(mN, kj2)
+                bool ksup_ = array.get(mPx, kj2) <= close
+                string kc_ = kn_ >= 2 ? (ksup_ ? " 守住×" : " 拒绝×") + str.tostring(kn_) : ""
+                f_tag(array.get(mPx, kj2), array.get(mNm, kj2) + " " + str.tostring(array.get(mPx, kj2), format.mintick) + kc_, kn_ >= 2 ? (ksup_ ? UPC : DNC) : INK2, size.small)
     // 日墙签
     if useWalls
         float wh_ = array.get(lvPx, 17)
         float wl_ = array.get(lvPx, 18)
+        int whN_ = array.get(lvN, 17)
+        int wlN_ = array.get(lvN, 18)
         if not na(wh_)
-            f_tag(wh_, "日高墙 " + str.tostring(wh_, format.mintick) + (array.get(lvN, 17) >= 2 ? " ×" + str.tostring(array.get(lvN, 17)) : ""), INK3, size.small)
+            f_tag(wh_, "日高墙 " + str.tostring(wh_, format.mintick) + (whN_ >= 2 ? (wh_ <= close ? " 守住×" : " 拒绝×") + str.tostring(whN_) : ""), whN_ >= 2 ? (wh_ <= close ? UPC : DNC) : INK3, size.small)
         if not na(wl_)
-            f_tag(wl_, "日低墙 " + str.tostring(wl_, format.mintick) + (array.get(lvN, 18) >= 2 ? " ×" + str.tostring(array.get(lvN, 18)) : ""), INK3, size.small)
+            f_tag(wl_, "日低墙 " + str.tostring(wl_, format.mintick) + (wlN_ >= 2 ? (wl_ <= close ? " 守住×" : " 拒绝×") + str.tostring(wlN_) : ""), wlN_ >= 2 ? (wl_ <= close ? UPC : DNC) : INK3, size.small)
 
 // ---------------- 守住/拒绝位（pivot 种子 + 插针触及计数）+ 机会灯 ----------------
 // 种子=已确认 pivot（无重绘）；贴近登记表位（0.03×ATR）的种子不建簇——那条位
@@ -815,13 +847,6 @@ var bool[] rBroken = array.new_bool(0)
 var bool[] rInBand = array.new_bool(0)
 var line[] rLine = array.new_line(0)
 var label[] rLabel = array.new_label(0)
-
-bool holdMomoLongSig = false
-bool holdMomoShortSig = false
-bool momoDotL = false
-bool momoDotR = false
-var float hSupLvlP = na
-var float hResLvlP = na
 
 // 日界=18:00 ET 新交易会话（与 buddy 一致）：夜盘攒的守住位开盘要带着，勿在 09:30 清
 if barstate.isconfirmed and is10m and newTradeDay
@@ -1070,7 +1095,7 @@ alertcondition(bullDivSig, "Fable｜底背离（图上标记）", '底背离｜{
 // ---------------- 机会灯通道与警报（v2.6 追加号位保持在末尾）----------------
 plot(math.round_to_mintick(hSupLvlP), "H_SUP", display=display.none)
 plot(math.round_to_mintick(hResLvlP), "H_RES", display=display.none)
-plotshape(momoDotL and showMomoDot, "机会灯·支撑蓄力", style=shape.circle, location=location.belowbar, color=color.new(UPC, 45), size=size.tiny, display=display.pane)
-plotshape(momoDotR and showMomoDot, "机会灯·压力承压", style=shape.circle, location=location.abovebar, color=color.new(DNC, 45), size=size.tiny, display=display.pane)
+plotshape(momoDotL and showMomoDot, "机会灯·支撑蓄力", style=shape.circle, location=location.belowbar, color=color.new(UPC, 35), size=size.tiny, display=display.pane)
+plotshape(momoDotR and showMomoDot, "机会灯·压力承压", style=shape.circle, location=location.abovebar, color=color.new(DNC, 35), size=size.tiny, display=display.pane)
 alertcondition(holdMomoLongSig, "Fable｜支撑反复守住·动能抬升", '支撑反复守住·动能抬升——蓄力形态｜{{ticker}}｜守住位={{plot("H_SUP")}}｜同一支撑至少第2次踩住未收破，且这次触及时RSI比上次更高｜背景参考·不是买入指令｜提示不是订单')
 alertcondition(holdMomoShortSig, "Fable｜压力反复拒绝·动能转弱", '压力反复拒绝·动能转弱——承压形态｜{{ticker}}｜拒绝位={{plot("H_RES")}}｜同一压力至少第2次冲不破，且这次触及时RSI比上次更低｜背景参考·不是卖出指令｜提示不是订单')
