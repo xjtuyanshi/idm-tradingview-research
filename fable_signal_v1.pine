@@ -2,7 +2,7 @@
 indicator("Fable Signal v1", shorttitle="Fable Signal", overlay=true, max_labels_count=500, max_lines_count=300)
 
 // ============================================================
-// Fable Signal v3.2.0 — 与 fable-buddy（System）统一口径的图上地图。
+// Fable Signal v3.2.1 — 与 fable-buddy（System）统一口径的图上地图。
 // 定位：System 的"眼睛"。判断与推送来自 fable-buddy；本图负责把 System
 // 引用的位、云、触及计数原样画出来。图上标记是「结构事件」，不是买卖建议。
 //
