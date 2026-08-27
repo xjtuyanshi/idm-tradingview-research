@@ -2,7 +2,7 @@
 indicator("Fable Signal v1", shorttitle="Fable Signal", overlay=true, max_labels_count=500, max_lines_count=300)
 
 // ============================================================
-// Fable Signal v3.1.0 — 与 fable-buddy（System）统一口径的图上地图。
+// Fable Signal v3.2.0 — 与 fable-buddy（System）统一口径的图上地图。
 // 定位：System 的"眼睛"。判断与推送来自 fable-buddy；本图负责把 System
 // 引用的位、云、触及计数原样画出来。图上标记是「结构事件」，不是买卖建议。
 //
@@ -17,6 +17,9 @@ indicator("Fable Signal v1", shorttitle="Fable Signal", overlay=true, max_labels
 //   夜盘高低  18:00→09:30 单段（=buddy 交易日窗口；盘前不再单列）
 //   日高低墙  RTH 极值 ≥30 分钟未刷新成墙，新极值换墙   = walls.py 08-24
 //   日型      10:30 首小时振幅/ATR+排列+盒内外 → 趋势/区间/不明朗 = engine._daytype
+//   动能衰减  相位振荡器 EMA3((c-EMA21)/(3×ATR14)×100)；价创窗口新高/新低而振荡器
+//             落后≥1.0，且贴日高低(0.06ATR)或贴梯位(0.12ATR)；45分钟无新极值不重发
+//             = engine._fade（用户定位：止盈/止损参考。10m 近似 buddy 的 5m 口径）
 //   词汇      锚/盒顶/盒底/守住×N/拒绝×N/失效线——与推送文案同词
 //
 // 【验证结论摘要（诚实记录，全文见 git 历史与 FABLE_SIGNAL_V2_STATUS.md）】
@@ -86,6 +89,13 @@ bool showCard = input.bool(true, "显示状态卡", group=G4, display=display.no
 bool yieldToSaty = input.bool(true, "同屏 Saty：锚/盒顶/盒底不画线（价签保留）", group=G4, display=display.none)
 bool showEma21 = input.bool(false, "画 EMA21 细线", group=G4, display=display.none)
 
+// v3.2 新增输入（追加在末尾，旧 in_0..in_36 序号不动）
+bool useFade = input.bool(true, "动能衰减（价新高/新低·振荡器没跟上）", group=G2, display=display.none)
+int fadeLookback = input.int(10, "衰减窗口（10m根｜10根=buddy 的 100 分钟窗）", minval=6, maxval=30, group=G3, display=display.none)
+float fadeMinDrop = input.float(1.0, "衰减最小振荡器差（buddy 同款:1.0）", minval=0.5, step=0.5, group=G3, display=display.none)
+float fadeNearExt = input.float(0.06, "衰减须贴日高低距离（×日ATR）", minval=0.02, step=0.01, group=G3, display=display.none)
+float fadeNearRung = input.float(0.12, "衰减或贴梯位距离（×日ATR）", minval=0.05, step=0.01, group=G3, display=display.none)
+
 // ---------------- 色板（console 方案 D 中性灰，全站禁暖色）----------------
 color INK1 = color.rgb(244, 244, 245)      // 主数值/锚
 color INK2 = color.rgb(212, 212, 216)      // 正文/关键位
@@ -116,6 +126,10 @@ bool stackBear = e8 < e13 and e13 < e21 and e21 < e34 and e34 < e48
 bool slowUp = e34 > e48 and close > slowTop
 bool slowDn = e34 < e48 and close < slowBot
 float rsi14 = ta.rsi(close, 14)
+// Saty 相位振荡器（=buddy engine._phase：EMA3((close-EMA21)/(3*ATR14)*100)，本图 TF 口径）
+float atrTf = ta.atr(14)
+float phaseRaw = not na(atrTf) and atrTf > 0 and not na(e21) ? (close - e21) / (3 * atrTf) * 100 : 0.0
+float phase = ta.ema(phaseRaw, 3)
 
 // 已完成日线（[1]+lookahead=昨日完成值，因果安全）：ATR14 / 昨收锚 / 昨高低
 [atrD, pcD, ydHi, ydLo] = request.security(syminfo.tickerid, "D", [ta.atr(14)[1], close[1], high[1], low[1]], lookahead=barmerge.lookahead_on)
@@ -626,6 +640,59 @@ if barstate.isconfirmed and is10m and inRth and hhmmET >= 1020 and (na(dayTypeDa
     dayTypeTxt := fhRng >= 0.5 and stacked_ and not inBox_ ? "趋势日（首小时 " + str.tostring(fhRng, "0.00") + "ATR·" + (stackBull ? "多头排列" : "空头排列") + "·已出盒）" : fhRng <= 0.35 or inBox_ ? "区间日（首小时 " + str.tostring(fhRng, "0.00") + "ATR" + (inBox_ ? "·盒内" : "") + "）" : "不明朗（首小时 " + str.tostring(fhRng, "0.00") + "ATR）"
     dayTypeDay := rthDayStamp
 
+// ---------------- 11) 动能衰减（=engine._fade，用户定位：止盈/止损参考）----------------
+// 价创窗口新高而相位振荡器没跟上（差≥fadeMinDrop），且贴近日高/夜高（0.06×ATR）
+// 或贴近梯位（0.12×ATR）才算数；45 分钟（5 根）内没有更高高点不重发。底部镜像。
+// 历史结算（buddy 8-21/8-24）：顶部 RTH 4/5 命中此后不再创新高·平均续跌 11 点（小样本）；
+// 底部版命中最弱，按"有多少发多少、用户自己过滤"的既定红线照发。
+float winHiP = ta.highest(high, fadeLookback)
+float winLoP = ta.lowest(low, fadeLookback)
+float winHiPh = ta.highest(phase, fadeLookback)
+float winLoPh = ta.lowest(phase, fadeLookback)
+var int fadeTopBar = na
+var float fadeTopHi = na
+var int fadeBotBar = na
+var float fadeBotLo = na
+bool fadeTopSig = false
+bool fadeBotSig = false
+if useFade and barstate.isconfirmed and is10m and not na(atrD) and atrD > 0 and bar_index > fadeLookback + 30
+    float minRungD = na
+    for fi = 0 to 12
+        float flp = array.get(lvPx, fi)
+        if not na(flp)
+            float fd = math.abs(close - flp)
+            if na(minRungD) or fd < minRungD
+                minRungD := fd
+    bool nearRungF = not na(minRungD) and minRungD <= fadeNearRung * atrD
+    // 顶：位置门=日内用当日高、盘外用夜盘累计高（=buddy rth_hi/on_hi 同构）
+    float extHi = inRth ? dayRunHi : nightAccHi
+    if high >= winHiP - 0.01 and phase < winHiPh - fadeMinDrop
+        bool nearTopF = not na(extHi) and extHi - high <= fadeNearExt * atrD
+        if (nearTopF or nearRungF) and (na(fadeTopBar) or bar_index - fadeTopBar >= 5 or high > fadeTopHi + syminfo.mintick)
+            fadeTopSig := true
+            fadeTopBar := bar_index
+            fadeTopHi := high
+    // 底：镜像
+    float extLo = inRth ? dayRunLo : nightAccLo
+    if low <= winLoP + 0.01 and phase > winLoPh + fadeMinDrop
+        bool nearBotF = not na(extLo) and low - extLo <= fadeNearExt * atrD
+        if (nearBotF or nearRungF) and (na(fadeBotBar) or bar_index - fadeBotBar >= 5 or low < fadeBotLo - syminfo.mintick)
+            fadeBotSig := true
+            fadeBotBar := bar_index
+            fadeBotLo := low
+if fadeTopSig
+    cautionBar := bar_index
+    cautionKind := 4
+    cautionTime := str.format_time(time, "HH:mm", "America/New_York")
+    lastSignalText := "动能衰减顶 " + str.format_time(time, "HH:mm", "America/New_York")
+    todayCount += 1
+if fadeBotSig
+    cautionBar := bar_index
+    cautionKind := 5
+    cautionTime := str.format_time(time, "HH:mm", "America/New_York")
+    lastSignalText := "动能衰减底 " + str.format_time(time, "HH:mm", "America/New_York")
+    todayCount += 1
+
 // ---------------- 信号收尾（通道值/卡片状态；图上只留小标记+夜盘小标签）----------------
 if trendLongSig
     lastSignalText := "回踩收回▲ " + str.format_time(time, "HH:mm", "America/New_York")
@@ -1046,7 +1113,7 @@ if barstate.islast
         string watchTxt = not is10m ? "请切到 10 分钟图" : tState == 1 and tDir == 1 ? "已离快带｜回落触 8/13 带后等阳线收回带上" : tState == 1 and tDir == -1 ? "已离快带｜反抽触 8/13 带后等阴线收回带下" : tState == 2 and tDir == 1 ? "回踩中｜" + str.tostring(reclaimBars - tAge, "#0") + " 根内收回带上才算数" : tState == 2 and tDir == -1 ? "反抽中｜" + str.tostring(reclaimBars - tAge, "#0") + " 根内收回带下才算数" : lvlPend == 1 ? "触盒底｜3 根内收回其上=反弹，否则作废" : lvlPend == -1 ? "触盒顶｜3 根内收回其下=受阻，否则作废" : close > UT ? "盒上运行｜" + bearNeed : close < LT ? "盒下运行｜" + bullNeed : "盒内｜方向未定，等站上盒顶/跌破盒底"
         // 警示行
         int cautionAge = na(cautionBar) ? 9999 : bar_index - cautionBar
-        string cautionTxt = cautionKind == 1 and cautionAge <= 12 ? "顶背离 " + cautionTime + "｜勿追多·勿加仓（非做空信号）" : cautionKind == 2 and cautionAge <= 12 ? "底背离 " + cautionTime + "｜结构事件·非买点" : cautionKind == 3 and cautionAge <= 6 ? "极端超买 " + cautionTime + "｜勿追·也勿做空" : "—"
+        string cautionTxt = cautionKind == 1 and cautionAge <= 12 ? "顶背离 " + cautionTime + "｜勿追多·勿加仓（非做空信号）" : cautionKind == 2 and cautionAge <= 12 ? "底背离 " + cautionTime + "｜结构事件·非买点" : cautionKind == 3 and cautionAge <= 6 ? "极端超买 " + cautionTime + "｜勿追·也勿做空" : cautionKind == 4 and cautionAge <= 12 ? "动能衰减(顶) " + cautionTime + "｜价新高动能没跟上·考虑部分止盈" : cautionKind == 5 and cautionAge <= 12 ? "动能衰减(底) " + cautionTime + "｜价新低动能没跟上·杀跌性价比降" : "—"
         bool cautionOn = cautionTxt != "—"
         // 持仓行
         string posTxt2 = lastSigLive ? (lastSigDir == 1 ? "多" : "空") + "·守 " + str.tostring(lastSigStop, format.mintick) + "（现距 " + str.tostring(math.abs(close - lastSigStop), "#.#") + " 点）" : "—"
@@ -1099,3 +1166,9 @@ plotshape(momoDotL and showMomoDot, "机会灯·支撑蓄力", style=shape.circl
 plotshape(momoDotR and showMomoDot, "机会灯·压力承压", style=shape.circle, location=location.abovebar, color=color.new(DNC, 35), size=size.tiny, display=display.pane)
 alertcondition(holdMomoLongSig, "Fable｜支撑反复守住·动能抬升", '支撑反复守住·动能抬升——蓄力形态｜{{ticker}}｜守住位={{plot("H_SUP")}}｜同一支撑至少第2次踩住未收破，且这次触及时RSI比上次更高｜背景参考·不是买入指令｜提示不是订单')
 alertcondition(holdMomoShortSig, "Fable｜压力反复拒绝·动能转弱", '压力反复拒绝·动能转弱——承压形态｜{{ticker}}｜拒绝位={{plot("H_RES")}}｜同一压力至少第2次冲不破，且这次触及时RSI比上次更低｜背景参考·不是卖出指令｜提示不是订单')
+
+// ---------------- v3.2 追加：动能衰减标记与警报（号位继续在末尾）----------------
+plotshape(fadeTopSig, "动能衰减·顶（止盈参考）", style=shape.xcross, location=location.abovebar, color=INK1, size=size.tiny, display=display.pane)
+plotshape(fadeBotSig, "动能衰减·底（观察）", style=shape.xcross, location=location.belowbar, color=INK1, size=size.tiny, display=display.pane)
+alertcondition(fadeTopSig, "Fable｜动能衰减·顶（止盈参考）", '动能衰减·顶｜{{ticker}}｜价格创新高但相位振荡器没跟上，且贴近日高/梯位｜含义：追多性价比下降，持多可考虑部分止盈｜明确不是做空信号｜近5交易日盘中4/5次此后不再创新高·平均续跌11点（小样本）｜提示不是订单')
+alertcondition(fadeBotSig, "Fable｜动能衰减·底（观察）", '动能衰减·底｜{{ticker}}｜价格创新低但相位振荡器没跟上，且贴近日低/梯位｜含义：追空/杀跌性价比下降，持空可考虑减仓｜若随后出现守住灯才是看多的组合｜底部版历史命中最弱·自行取舍｜提示不是订单')
