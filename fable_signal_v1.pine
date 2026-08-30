@@ -2,7 +2,11 @@
 indicator("Fable Signal v1", shorttitle="Fable Signal", overlay=true, max_labels_count=500, max_lines_count=300)
 
 // ============================================================
-// Fable Signal v3.2.1 — 与 fable-buddy（System）统一口径的图上地图。
+// Fable Signal v3.3.0 — 与 fable-buddy（System）统一口径的图上地图。
+// 【v3.3.0】慢云翻色警报（滞回 0.008×日ATR=engine._cloud_flip 同款）+
+//   陡势反抽带信号（云新翻色期反弹死在 e13 带=buddy 08-29 云色引擎；
+//   周五实测云 13:20 翻红后高点距 e13 -0.6~-3 点、e21 版整下午零触发）。
+//   追加式：现有 plot 通道与 16 条警报文案零改动。
 // 定位：System 的"眼睛"。判断与推送来自 fable-buddy；本图负责把 System
 // 引用的位、云、触及计数原样画出来。图上标记是「结构事件」，不是买卖建议。
 //
@@ -1172,3 +1176,46 @@ plotshape(fadeTopSig, "动能衰减·顶（止盈参考）", style=shape.xcross,
 plotshape(fadeBotSig, "动能衰减·底（观察）", style=shape.xcross, location=location.belowbar, color=INK1, size=size.tiny, display=display.pane)
 alertcondition(fadeTopSig, "Fable｜动能衰减·顶（止盈参考）", '动能衰减·顶｜{{ticker}}｜价格创新高但相位振荡器没跟上，且贴近日高/梯位｜含义：追多性价比下降，持多可考虑部分止盈｜明确不是做空信号｜近5交易日盘中4/5次此后不再创新高·平均续跌11点（小样本）｜提示不是订单')
 alertcondition(fadeBotSig, "Fable｜动能衰减·底（观察）", '动能衰减·底｜{{ticker}}｜价格创新低但相位振荡器没跟上，且贴近日低/梯位｜含义：追空/杀跌性价比下降，持空可考虑减仓｜若随后出现守住灯才是看多的组合｜底部版历史命中最弱·自行取舍｜提示不是订单')
+
+
+// ---------------- v3.3.0 慢云翻色 + 陡势反抽带（= buddy 08-29 云色引擎）----------------
+// cloudState 滞回带 0.008×日ATR（缠绕期保持旧色不判翻转）；翻色后 15 根
+// 10m K（150min ≈ buddy 2.5h 门的 10m 近似）内为"新翻色期"；期内反弹/
+// 回踩死在 e13 带（±0.03×日ATR）= 陡势受阻/踩住（陡势里价格够不到 e21）。
+var int cloudState = 0          // 1=绿(34>48)  -1=红(34<48)  0=未建档
+float cloudEps = 0.008 * atrD
+int cloudNow = e34 < e48 - cloudEps ? -1 : e34 > e48 + cloudEps ? 1 : cloudState
+bool cloudFlipRed = barstate.isconfirmed and cloudNow == -1 and cloudState == 1
+bool cloudFlipGreen = barstate.isconfirmed and cloudNow == 1 and cloudState == -1
+if barstate.isconfirmed
+    cloudState := cloudNow
+var int flipBarRed = na
+var int flipBarGreen = na
+if cloudFlipRed
+    flipBarRed := bar_index
+if cloudFlipGreen
+    flipBarGreen := bar_index
+bool freshRed = cloudState == -1 and not na(flipBarRed) and bar_index - flipBarRed <= 15
+bool freshGreen = cloudState == 1 and not na(flipBarGreen) and bar_index - flipBarGreen <= 15
+float steepZone = 0.03 * atrD
+bool steepShortRaw = freshRed and close < slowBot and high >= e13 - steepZone and close < e13 and not cloudFlipRed
+bool steepLongRaw = freshGreen and close > slowTop and low <= e13 + steepZone and close > e13 and not cloudFlipGreen
+// 3 根冷却（≈ buddy pulldn 10 分钟冷却 + 同位去重的 10m 近似）
+var int lastSteepShortBar = na
+var int lastSteepLongBar = na
+bool steepShortSig = steepShortRaw and (na(lastSteepShortBar) or bar_index - lastSteepShortBar >= 3)
+bool steepLongSig = steepLongRaw and (na(lastSteepLongBar) or bar_index - lastSteepLongBar >= 3)
+if steepShortSig and barstate.isconfirmed
+    lastSteepShortBar := bar_index
+if steepLongSig and barstate.isconfirmed
+    lastSteepLongBar := bar_index
+
+plotshape(steepShortSig, "SB_SHORT", style=shape.triangledown, location=location.abovebar, color=DNC, size=size.tiny, text="陡", textcolor=DNC)
+plotshape(steepLongSig, "SB_LONG", style=shape.triangleup, location=location.belowbar, color=UPC, size=size.tiny, text="陡", textcolor=UPC)
+plotshape(cloudFlipRed, "CLOUD_RED", style=shape.diamond, location=location.abovebar, color=DNC, size=size.small)
+plotshape(cloudFlipGreen, "CLOUD_GREEN", style=shape.diamond, location=location.belowbar, color=UPC, size=size.small)
+
+alertcondition(cloudFlipRed, "Fable｜慢云翻红", '慢云翻红（EMA34 下穿 48·滞回确认）｜{{ticker}}｜趋势背景转空：从现在起反抽不过 13/21 均线带就是标准开空点｜= System 云色引擎同口径｜背景转换通报·提示不是订单')
+alertcondition(cloudFlipGreen, "Fable｜慢云翻绿", '慢云翻绿（EMA34 上穿 48·滞回确认）｜{{ticker}}｜趋势背景转多：回踩 13/21 均线带不破就是标准开多点｜= System 云色引擎同口径｜背景转换通报·提示不是订单')
+alertcondition(steepShortSig, "Fable｜陡势反抽受阻（云新翻红期）", '陡势反抽受阻｜{{ticker}}｜云新翻红期反弹死在 13 均线带——陡势里价格够不到 21 均线｜= System 反抽空卡陡势口径（08-28 复盘新增·样本极小自行取舍）｜提示不是订单')
+alertcondition(steepLongSig, "Fable｜陡势回踩踩住（云新翻绿期）", '陡势回踩踩住｜{{ticker}}｜云新翻绿期回踩在 13 均线带获承接｜= System 回踩多卡陡势口径（08-28 复盘新增·样本极小自行取舍）｜提示不是订单')
