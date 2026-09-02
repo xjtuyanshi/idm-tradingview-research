@@ -2,7 +2,10 @@
 indicator("Fable Signal v1", shorttitle="Fable Signal", overlay=true, max_labels_count=500, max_lines_count=300)
 
 // ============================================================
-// Fable Signal v3.3.0 — 与 fable-buddy（System）统一口径的图上地图。
+// Fable Signal v3.3.1 — 与 fable-buddy（System）统一口径的图上地图。
+// 【v3.3.1】陡势带降噪（用户：图上"陡"字太多不知何意）：同一翻色期内只在
+//   "拒绝位下移/上移 ≥0.1×日ATR"（趋势又走了一段、出现新的反抽）时再标，
+//   同位复读不标（=buddy 同位去重口径）；标记改为"陡空/陡多"自带方向。
 // 【v3.3.0】慢云翻色警报（滞回 0.008×日ATR=engine._cloud_flip 同款）+
 //   陡势反抽带信号（云新翻色期反弹死在 e13 带=buddy 08-29 云色引擎；
 //   周五实测云 13:20 翻红后高点距 e13 -0.6~-3 点、e21 版整下午零触发）。
@@ -1200,18 +1203,27 @@ bool freshGreen = cloudState == 1 and not na(flipBarGreen) and bar_index - flipB
 float steepZone = 0.03 * atrD
 bool steepShortRaw = freshRed and close < slowBot and high >= e13 - steepZone and close < e13 and not cloudFlipRed
 bool steepLongRaw = freshGreen and close > slowTop and low <= e13 + steepZone and close > e13 and not cloudFlipGreen
-// 3 根冷却（≈ buddy pulldn 10 分钟冷却 + 同位去重的 10m 近似）
+// 3 根冷却 + 同位去重（v3.3.1）：同一翻色期内拒绝位须比上次下移/上移
+// ≥0.1×日ATR 才再标（趋势延伸后的新反抽才有信息，同位复读只制造噪声）
 var int lastSteepShortBar = na
 var int lastSteepLongBar = na
-bool steepShortSig = steepShortRaw and (na(lastSteepShortBar) or bar_index - lastSteepShortBar >= 3)
-bool steepLongSig = steepLongRaw and (na(lastSteepLongBar) or bar_index - lastSteepLongBar >= 3)
+var float lastSteepShortHi = na
+var float lastSteepLongLo = na
+if cloudFlipRed
+    lastSteepShortHi := na
+if cloudFlipGreen
+    lastSteepLongLo := na
+bool steepShortSig = steepShortRaw and (na(lastSteepShortBar) or bar_index - lastSteepShortBar >= 3) and (na(lastSteepShortHi) or high <= lastSteepShortHi - 0.1 * atrD)
+bool steepLongSig = steepLongRaw and (na(lastSteepLongBar) or bar_index - lastSteepLongBar >= 3) and (na(lastSteepLongLo) or low >= lastSteepLongLo + 0.1 * atrD)
 if steepShortSig and barstate.isconfirmed
     lastSteepShortBar := bar_index
+    lastSteepShortHi := high
 if steepLongSig and barstate.isconfirmed
     lastSteepLongBar := bar_index
+    lastSteepLongLo := low
 
-plotshape(steepShortSig, "SB_SHORT", style=shape.triangledown, location=location.abovebar, color=DNC, size=size.tiny, text="陡", textcolor=DNC)
-plotshape(steepLongSig, "SB_LONG", style=shape.triangleup, location=location.belowbar, color=UPC, size=size.tiny, text="陡", textcolor=UPC)
+plotshape(steepShortSig, "SB_SHORT", style=shape.triangledown, location=location.abovebar, color=DNC, size=size.tiny, text="陡空", textcolor=DNC)
+plotshape(steepLongSig, "SB_LONG", style=shape.triangleup, location=location.belowbar, color=UPC, size=size.tiny, text="陡多", textcolor=UPC)
 plotshape(cloudFlipRed, "CLOUD_RED", style=shape.diamond, location=location.abovebar, color=DNC, size=size.small)
 plotshape(cloudFlipGreen, "CLOUD_GREEN", style=shape.diamond, location=location.belowbar, color=UPC, size=size.small)
 
