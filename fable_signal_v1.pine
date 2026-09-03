@@ -2,7 +2,10 @@
 indicator("Fable Signal v1", shorttitle="Fable Signal", overlay=true, max_labels_count=500, max_lines_count=300)
 
 // ============================================================
-// Fable Signal v3.3.1 — 与 fable-buddy（System）统一口径的图上地图。
+// Fable Signal v3.3.2 — 与 fable-buddy（System）统一口径的图上地图。
+// 【v3.3.2】陡势带标记改为"回踩多/反抽空"（用户："陡多陡空是好是坏？"——
+//   直接写动作+方向，与"回踩买点/卖点"同一词系；含义：云新翻色期内回踩
+//   13 均线被买起=顺势做多点，反弹到 13 均线被压回=顺势做空点）。
 // 【v3.3.1】陡势带降噪（用户：图上"陡"字太多不知何意）：同一翻色期内只在
 //   "拒绝位下移/上移 ≥0.1×日ATR"（趋势又走了一段、出现新的反抽）时再标，
 //   同位复读不标（=buddy 同位去重口径）；标记改为"陡空/陡多"自带方向。
@@ -1222,8 +1225,8 @@ if steepLongSig and barstate.isconfirmed
     lastSteepLongBar := bar_index
     lastSteepLongLo := low
 
-plotshape(steepShortSig, "SB_SHORT", style=shape.triangledown, location=location.abovebar, color=DNC, size=size.tiny, text="陡空", textcolor=DNC)
-plotshape(steepLongSig, "SB_LONG", style=shape.triangleup, location=location.belowbar, color=UPC, size=size.tiny, text="陡多", textcolor=UPC)
+plotshape(steepShortSig, "SB_SHORT", style=shape.triangledown, location=location.abovebar, color=DNC, size=size.tiny, text="反抽空", textcolor=DNC)
+plotshape(steepLongSig, "SB_LONG", style=shape.triangleup, location=location.belowbar, color=UPC, size=size.tiny, text="回踩多", textcolor=UPC)
 plotshape(cloudFlipRed, "CLOUD_RED", style=shape.diamond, location=location.abovebar, color=DNC, size=size.small)
 plotshape(cloudFlipGreen, "CLOUD_GREEN", style=shape.diamond, location=location.belowbar, color=UPC, size=size.small)
 
